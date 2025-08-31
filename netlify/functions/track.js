@@ -1,7 +1,6 @@
 const fetch = require('node-fetch');
 const { URLSearchParams } = require('url');
 
-// Standard CORS headers to allow your WordPress site to call this function.
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'Content-Type',
@@ -9,7 +8,6 @@ const corsHeaders = {
 };
 
 exports.handler = async function(event, context) {
-    // Standard handling for the browser's pre-flight security check.
     if (event.httpMethod === 'OPTIONS') {
         return { statusCode: 200, headers: corsHeaders, body: 'Success' };
     }
@@ -22,11 +20,9 @@ exports.handler = async function(event, context) {
     const MAERSK_SECRET = process.env.MAERSK_API_CONSUMER_SECRET;
 
     // --- PART 1: AUTHENTICATION (Private OAuth Flow) ---
-    // As per your analysis, this is the correct flow for the private API.
-    // It will fail until Maersk whitelists the account, at which point it will work.
-    const tokenUrl = 'https://api.maersk.com/v2/oauth2/token';
-
+    const tokenUrl = 'https://api.maersk.com/v2/oauth2/token'; // Private OAuth endpoint
     let accessToken;
+
     try {
         const formBody = new URLSearchParams();
         formBody.append('grant_type', 'client_credentials');
@@ -35,50 +31,68 @@ exports.handler = async function(event, context) {
 
         const tokenResponse = await fetch(tokenUrl, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded'
-            },
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             body: formBody.toString()
         });
-        
-        const tokenData = await tokenResponse.json();
-        
-        if (!tokenData.access_token) {
-            throw new Error(JSON.stringify(tokenData));
+
+        // Debug fallback in case response is not JSON
+        let tokenData;
+        try {
+            tokenData = await tokenResponse.json();
+        } catch (err) {
+            const text = await tokenResponse.text();
+            throw new Error(`Failed to parse OAuth JSON. Raw response: ${text}`);
         }
+
+        if (!tokenData.access_token) {
+            throw new Error(`No access_token in OAuth response: ${JSON.stringify(tokenData)}`);
+        }
+
         accessToken = tokenData.access_token;
-        
+
     } catch (error) {
-        return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: `Authentication failed. This is expected until Maersk whitelists your account. Maersk server response: ${error.message}` }) };
+        return {
+            statusCode: 500,
+            headers: corsHeaders,
+            body: JSON.stringify({
+                error: `Authentication failed. Ensure your private Track & Trace app is whitelisted for OAuth v2. Details: ${error.message}`
+            })
+        };
     }
 
-    // --- PART 2: DATA FETCHING (Private Track & Trace Endpoint) ---
-    // This part will only be reached after the authentication in Part 1 succeeds.
+    // --- PART 2: FETCH TRACKING DATA (Private Endpoint) ---
     const trackingApiUrl = `https://api.maersk.com/track-and-trace-private/events?transportDocumentReference=${trackingNumber}`;
+
     try {
         const trackingResponse = await fetch(trackingApiUrl, {
             method: 'GET',
             headers: { 
                 'Authorization': `Bearer ${accessToken}`,
-                'Consumer-Key': MAERSK_KEY 
+                'Consumer-Key': MAERSK_KEY
             }
         });
 
         if (!trackingResponse.ok) {
             const errorText = await trackingResponse.text();
-            return { statusCode: trackingResponse.status, headers: corsHeaders, body: JSON.stringify({ error: `Tracking information not found. Status: ${trackingResponse.statusText}. Details: ${errorText}` }) };
+            return {
+                statusCode: trackingResponse.status,
+                headers: corsHeaders,
+                body: JSON.stringify({
+                    error: `Maersk Private API Error. Ensure your account is whitelisted. Raw response: ${errorText}`
+                })
+            };
         }
 
         const trackingData = await trackingResponse.json();
-        
-        // --- PART 3: FORMAT AND RETURN DATA ---
+
+        // --- PART 3: FORMAT RESPONSE ---
         const latest_event = (trackingData.events && trackingData.events[0]) || {};
         const current_status = latest_event.shipmentEventTypeCode || 'Status Unavailable';
         const formatted_response = {
             status: current_status,
             events: (trackingData.events || []).map(event => ({
                 date: event.eventCreatedDateTime || 'N/A',
-                description: event.eventDescription || 'No description',
+                description: event.eventDescription || event.eventType || 'No description',
                 location: (event.eventLocation && event.eventLocation.locationName) || 'Unknown location',
             }))
         };
@@ -90,6 +104,12 @@ exports.handler = async function(event, context) {
         };
 
     } catch (error) {
-        return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: 'An error occurred while fetching tracking data.' }) };
+        return {
+            statusCode: 500,
+            headers: corsHeaders,
+            body: JSON.stringify({
+                error: `An internal error occurred while fetching tracking data: ${error.message}`
+            })
+        };
     }
 };
