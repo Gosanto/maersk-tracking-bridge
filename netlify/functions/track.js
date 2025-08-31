@@ -1,6 +1,5 @@
 const fetch = require('node-fetch');
 
-// Define headers that allow any website to access this function
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'Content-Type',
@@ -8,16 +7,9 @@ const corsHeaders = {
 };
 
 exports.handler = async function(event, context) {
-    // Immediately handle pre-flight requests for CORS
     if (event.httpMethod === 'OPTIONS') {
-        return {
-            statusCode: 200,
-            headers: corsHeaders,
-            body: JSON.stringify({ message: 'OPTIONS request successful' })
-        };
+        return { statusCode: 200, headers: corsHeaders, body: 'Success' };
     }
-
-    // Only allow POST requests
     if (event.httpMethod !== 'POST') {
         return { statusCode: 405, headers: corsHeaders, body: 'Method Not Allowed' };
     }
@@ -25,6 +17,7 @@ exports.handler = async function(event, context) {
     const { trackingNumber } = JSON.parse(event.body);
     const MAERSK_KEY = process.env.MAERSK_API_CONSUMER_KEY;
     const MAERSK_SECRET = process.env.MAERSK_API_CONSUMER_SECRET;
+    const MAERSK_CUSTOMER_CODE = '12901349540'; // Your Customer Code
 
     // --- 1. Get Access Token ---
     const tokenUrl = 'https://api.maersk.com/v2/oauth2/token';
@@ -36,22 +29,30 @@ exports.handler = async function(event, context) {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/x-www-form-urlencoded',
-                'Authorization': `Basic ${authString}`
+                'Authorization': `Basic ${authString}`,
+                'Customer-Code': MAERSK_CUSTOMER_CODE // <-- THIS IS THE CRITICAL ADDITION
             },
             body: 'grant_type=client_credentials'
         });
         const tokenData = await tokenResponse.json();
-        if (!tokenData.access_token) throw new Error('Authentication failed');
+        if (!tokenData.access_token) {
+            // Log the detailed error from Maersk for debugging
+            const errorDetails = JSON.stringify(tokenData);
+            throw new Error(`Authentication failed: ${errorDetails}`);
+        }
         accessToken = tokenData.access_token;
     } catch (error) {
-        return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: 'Could not authenticate with carrier. Check API keys.' }) };
+        return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: `Could not authenticate with carrier. Details: ${error.message}` }) };
     }
 
     // --- 2. Get Tracking Info ---
     const trackingApiUrl = `https://api.maersk.com/track-and-trace-private/events?transportDocumentReference=${trackingNumber}`;
     try {
         const trackingResponse = await fetch(trackingApiUrl, {
-            headers: { 'Authorization': `Bearer ${accessToken}` }
+            headers: { 
+                'Authorization': `Bearer ${accessToken}`,
+                'Customer-Code': MAERSK_CUSTOMER_CODE // Also adding it here just in case
+            }
         });
 
         if (!trackingResponse.ok) {
