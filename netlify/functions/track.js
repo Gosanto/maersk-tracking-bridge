@@ -1,5 +1,6 @@
 const fetch = require('node-fetch');
 
+// Standard CORS headers to allow your WordPress site to call this function
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'Content-Type',
@@ -7,6 +8,7 @@ const corsHeaders = {
 };
 
 exports.handler = async function(event, context) {
+    // Standard pre-flight request handling
     if (event.httpMethod === 'OPTIONS') {
         return { statusCode: 200, headers: corsHeaders, body: 'Success' };
     }
@@ -17,11 +19,9 @@ exports.handler = async function(event, context) {
     const { trackingNumber } = JSON.parse(event.body);
     const MAERSK_KEY = process.env.MAERSK_API_CONSUMER_KEY;
     const MAERSK_SECRET = process.env.MAERSK_API_CONSUMER_SECRET;
-    const MAERSK_CUSTOMER_CODE = '12901349540'; // Your Customer Code
 
-    // --- 1. Get Access Token ---
-    // Let's add the Customer-Code here, as the routing error suggests
-    // an issue during the authentication step itself.
+    // --- PART 1: AUTHENTICATION ---
+    // This section follows the "Authorisation Guide" document precisely.
     const tokenUrl = 'https://api.maersk.com/v2/oauth2/token';
     const authString = Buffer.from(`${MAERSK_KEY}:${MAERSK_SECRET}`).toString('base64');
 
@@ -30,29 +30,35 @@ exports.handler = async function(event, context) {
         const tokenResponse = await fetch(tokenUrl, {
             method: 'POST',
             headers: {
+                // As per the Authorisation Guide, only these two headers are required.
                 'Content-Type': 'application/x-www-form-urlencoded',
-                'Authorization': `Basic ${authString}`,
-                'Customer-Code': MAERSK_CUSTOMER_CODE // Adding this header to the auth call
+                'Authorization': `Basic ${authString}`
             },
-            body: 'grant_type=client_credentials'
+            body: 'grant_type=client_credentials' // The required body content
         });
+        
         const tokenData = await tokenResponse.json();
+        
         if (!tokenData.access_token) {
-            const errorDetails = JSON.stringify(tokenData);
-            throw new Error(`${errorDetails}`);
+            // If this fails, throw the exact error from Maersk's server.
+            throw new Error(JSON.stringify(tokenData));
         }
         accessToken = tokenData.access_token;
+        
     } catch (error) {
-        return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: `Could not authenticate with carrier. Details: ${error.message}` }) };
+        return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: `Authentication failed. Maersk server response: ${error.message}` }) };
     }
 
-    // --- 2. Get Tracking Info ---
+    // --- PART 2: DATA FETCHING ---
+    // This section follows the "Track & Trace Events API" specification precisely.
     const trackingApiUrl = `https://api.maersk.com/track-and-trace-private/events?transportDocumentReference=${trackingNumber}`;
     try {
         const trackingResponse = await fetch(trackingApiUrl, {
+            method: 'GET',
             headers: { 
+                // As per the T&T API Spec, both the Bearer token and the Consumer-Key are required.
                 'Authorization': `Bearer ${accessToken}`,
-                'Consumer-Key': MAERSK_KEY
+                'Consumer-Key': MAERSK_KEY 
             }
         });
 
@@ -62,7 +68,7 @@ exports.handler = async function(event, context) {
 
         const trackingData = await trackingResponse.json();
         
-        // --- 3. Format and Return Data ---
+        // --- PART 3: FORMAT AND RETURN DATA ---
         const latest_event = (trackingData.events && trackingData.events[0]) || {};
         const current_status = latest_event.shipmentEventTypeCode || 'Status Unavailable';
         const formatted_response = {
