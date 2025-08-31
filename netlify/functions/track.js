@@ -1,7 +1,6 @@
 const fetch = require('node-fetch');
+// The URLSearchParams interface is native to Node.js, so no extra import is needed.
 
-// Standard CORS headers to allow your WordPress site to call this function.
-// This is a best practice for public-facing APIs.
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'Content-Type',
@@ -9,43 +8,40 @@ const corsHeaders = {
 };
 
 exports.handler = async function(event, context) {
-    // Standard handling for the browser's pre-flight security check.
     if (event.httpMethod === 'OPTIONS') {
         return { statusCode: 200, headers: corsHeaders, body: 'Success' };
     }
-    // We only want to process POST requests from the HTML form.
     if (event.httpMethod !== 'POST') {
         return { statusCode: 405, headers: corsHeaders, body: 'Method Not Allowed' };
     }
 
     const { trackingNumber } = JSON.parse(event.body);
-    
-    // Read your secret credentials from the Netlify Environment Variables.
     const MAERSK_KEY = process.env.MAERSK_API_CONSUMER_KEY;
     const MAERSK_SECRET = process.env.MAERSK_API_CONSUMER_SECRET;
 
-    // --- PART 1: AUTHENTICATION ---
-    // This section follows the "Authorisation Guide" documentation precisely.
-    const tokenUrl = 'https://api.maersk.com/v2/oauth2/token';
-    const authString = Buffer.from(`${MAERSK_KEY}:${MAERSK_SECRET}`).toString('base64');
+    // --- PART 1: AUTHENTICATION (Corrected Flow) ---
+    // Using the recommended method of sending credentials in the body.
+    const tokenUrl = 'https://api.maersk.com/v2/oauth2/token'; // Using the documented /v2/ endpoint first. Can be changed if needed.
 
     let accessToken;
     try {
+        // Create the body in the 'application/x-www-form-urlencoded' format.
+        const formBody = new URLSearchParams();
+        formBody.append('grant_type', 'client_credentials');
+        formBody.append('client_id', MAERSK_KEY);
+        formBody.append('client_secret', MAERSK_SECRET);
+
         const tokenResponse = await fetch(tokenUrl, {
             method: 'POST',
             headers: {
-                // As per the Authorisation Guide, only these two headers are required.
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'Authorization': `Basic ${authString}`
+                'Content-Type': 'application/x-www-form-urlencoded'
             },
-            body: 'grant_type=client_credentials' // The required body content.
+            body: formBody.toString()
         });
         
         const tokenData = await tokenResponse.json();
         
         if (!tokenData.access_token) {
-            // If authentication fails, throw the exact error from Maersk's server.
-            // This is the error you will send to their support team.
             throw new Error(JSON.stringify(tokenData));
         }
         accessToken = tokenData.access_token;
@@ -54,14 +50,12 @@ exports.handler = async function(event, context) {
         return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: `Authentication failed. Maersk server response: ${error.message}` }) };
     }
 
-    // --- PART 2: DATA FETCHING ---
-    // This section follows the "Track & Trace Events API" specification precisely.
+    // --- PART 2: DATA FETCHING (Remains the same as per T&T docs) ---
     const trackingApiUrl = `https://api.maersk.com/track-and-trace-private/events?transportDocumentReference=${trackingNumber}`;
     try {
         const trackingResponse = await fetch(trackingApiUrl, {
             method: 'GET',
             headers: { 
-                // As per the T&T API Spec, both the Bearer token and the Consumer-Key are required.
                 'Authorization': `Bearer ${accessToken}`,
                 'Consumer-Key': MAERSK_KEY 
             }
@@ -74,7 +68,6 @@ exports.handler = async function(event, context) {
         const trackingData = await trackingResponse.json();
         
         // --- PART 3: FORMAT AND RETURN DATA ---
-        // This section safely formats the data for your website.
         const latest_event = (trackingData.events && trackingData.events[0]) || {};
         const current_status = latest_event.shipmentEventTypeCode || 'Status Unavailable';
         const formatted_response = {
