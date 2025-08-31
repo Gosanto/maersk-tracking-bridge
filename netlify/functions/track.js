@@ -19,7 +19,7 @@ exports.handler = async function(event, context) {
     const MAERSK_KEY = process.env.MAERSK_API_CONSUMER_KEY;
     const MAERSK_SECRET = process.env.MAERSK_API_CONSUMER_SECRET;
 
-    // --- PART 1: AUTHENTICATION (Private OAuth Flow) ---
+    // --- PART 1: AUTHENTICATION (Private OAuth Flow with Robust Error Handling) ---
     const tokenUrl = 'https://api.maersk.com/v2/oauth2/token'; // Private OAuth endpoint
     let accessToken;
 
