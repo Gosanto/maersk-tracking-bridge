@@ -17,8 +17,11 @@ exports.handler = async function(event, context) {
     const { trackingNumber } = JSON.parse(event.body);
     const MAERSK_KEY = process.env.MAERSK_API_CONSUMER_KEY;
     const MAERSK_SECRET = process.env.MAERSK_API_CONSUMER_SECRET;
+    const MAERSK_CUSTOMER_CODE = '12901349540'; // Your Customer Code
 
-    // --- 1. Get Access Token (This part remains the same) ---
+    // --- 1. Get Access Token ---
+    // Let's add the Customer-Code here, as the routing error suggests
+    // an issue during the authentication step itself.
     const tokenUrl = 'https://api.maersk.com/v2/oauth2/token';
     const authString = Buffer.from(`${MAERSK_KEY}:${MAERSK_SECRET}`).toString('base64');
 
@@ -27,28 +30,29 @@ exports.handler = async function(event, context) {
         const tokenResponse = await fetch(tokenUrl, {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/x-form-urlencoded',
-                'Authorization': `Basic ${authString}`
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Authorization': `Basic ${authString}`,
+                'Customer-Code': MAERSK_CUSTOMER_CODE // Adding this header to the auth call
             },
             body: 'grant_type=client_credentials'
         });
         const tokenData = await tokenResponse.json();
         if (!tokenData.access_token) {
             const errorDetails = JSON.stringify(tokenData);
-            throw new Error(`Authentication failed: ${errorDetails}`);
+            throw new Error(`${errorDetails}`);
         }
         accessToken = tokenData.access_token;
     } catch (error) {
         return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: `Could not authenticate with carrier. Details: ${error.message}` }) };
     }
 
-    // --- 2. Get Tracking Info (This part is now corrected based on the documentation) ---
+    // --- 2. Get Tracking Info ---
     const trackingApiUrl = `https://api.maersk.com/track-and-trace-private/events?transportDocumentReference=${trackingNumber}`;
     try {
         const trackingResponse = await fetch(trackingApiUrl, {
             headers: { 
                 'Authorization': `Bearer ${accessToken}`,
-                'Consumer-Key': MAERSK_KEY // <-- THE CRITICAL HEADER FROM THE DOCUMENTATION
+                'Consumer-Key': MAERSK_KEY
             }
         });
 
