@@ -1,5 +1,5 @@
 const fetch = require('node-fetch');
-// The URLSearchParams interface is native to Node.js, so no extra import is needed.
+const { URLSearchParams } = require('url');
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -19,13 +19,12 @@ exports.handler = async function(event, context) {
     const MAERSK_KEY = process.env.MAERSK_API_CONSUMER_KEY;
     const MAERSK_SECRET = process.env.MAERSK_API_CONSUMER_SECRET;
 
-    // --- PART 1: AUTHENTICATION (Corrected Flow) ---
-    // Using the recommended method of sending credentials in the body.
-    const tokenUrl = 'https://api.maersk.com/v2/oauth2/token'; // Using the documented /v2/ endpoint first. Can be changed if needed.
+    // --- PART 1: AUTHENTICATION (Using the alternative endpoint URL) ---
+    // This is the final variable we can test.
+    const tokenUrl = 'https://api.maersk.com/oauth2/token'; // <-- THE ONLY CHANGE IS HERE
 
     let accessToken;
     try {
-        // Create the body in the 'application/x-www-form-urlencoded' format.
         const formBody = new URLSearchParams();
         formBody.append('grant_type', 'client_credentials');
         formBody.append('client_id', MAERSK_KEY);
