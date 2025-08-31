@@ -1,9 +1,25 @@
 const fetch = require('node-fetch');
 
+// Define headers that allow any website to access this function
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS'
+};
+
 exports.handler = async function(event, context) {
+    // Immediately handle pre-flight requests for CORS
+    if (event.httpMethod === 'OPTIONS') {
+        return {
+            statusCode: 200,
+            headers: corsHeaders,
+            body: JSON.stringify({ message: 'OPTIONS request successful' })
+        };
+    }
+
     // Only allow POST requests
     if (event.httpMethod !== 'POST') {
-        return { statusCode: 405, body: 'Method Not Allowed' };
+        return { statusCode: 405, headers: corsHeaders, body: 'Method Not Allowed' };
     }
 
     const { trackingNumber } = JSON.parse(event.body);
@@ -28,7 +44,7 @@ exports.handler = async function(event, context) {
         if (!tokenData.access_token) throw new Error('Authentication failed');
         accessToken = tokenData.access_token;
     } catch (error) {
-        return { statusCode: 500, body: JSON.stringify({ error: 'Could not authenticate with carrier.' }) };
+        return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: 'Could not authenticate with carrier. Check API keys.' }) };
     }
 
     // --- 2. Get Tracking Info ---
@@ -39,7 +55,8 @@ exports.handler = async function(event, context) {
         });
 
         if (!trackingResponse.ok) {
-            return { statusCode: 404, body: JSON.stringify({ error: 'Tracking information not found.' }) };
+            const errorBody = await trackingResponse.text();
+            return { statusCode: 404, headers: corsHeaders, body: JSON.stringify({ error: 'Tracking information not found for that number.' }) };
         }
 
         const trackingData = await trackingResponse.json();
@@ -58,13 +75,11 @@ exports.handler = async function(event, context) {
 
         return {
             statusCode: 200,
-            headers: {
-              'Access-Control-Allow-Origin': '*', // Allows your wordpress site to call this
-            },
+            headers: corsHeaders,
             body: JSON.stringify(formatted_response)
         };
 
     } catch (error) {
-        return { statusCode: 500, body: JSON.stringify({ error: 'An error occurred while fetching tracking data.' }) };
+        return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: 'An error occurred while fetching tracking data.' }) };
     }
 };
