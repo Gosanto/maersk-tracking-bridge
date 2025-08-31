@@ -1,6 +1,7 @@
 const fetch = require('node-fetch');
 
-// Standard CORS headers to allow your WordPress site to call this function
+// Standard CORS headers to allow your WordPress site to call this function.
+// This is a best practice for public-facing APIs.
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'Content-Type',
@@ -8,20 +9,23 @@ const corsHeaders = {
 };
 
 exports.handler = async function(event, context) {
-    // Standard pre-flight request handling
+    // Standard handling for the browser's pre-flight security check.
     if (event.httpMethod === 'OPTIONS') {
         return { statusCode: 200, headers: corsHeaders, body: 'Success' };
     }
+    // We only want to process POST requests from the HTML form.
     if (event.httpMethod !== 'POST') {
         return { statusCode: 405, headers: corsHeaders, body: 'Method Not Allowed' };
     }
 
     const { trackingNumber } = JSON.parse(event.body);
+    
+    // Read your secret credentials from the Netlify Environment Variables.
     const MAERSK_KEY = process.env.MAERSK_API_CONSUMER_KEY;
     const MAERSK_SECRET = process.env.MAERSK_API_CONSUMER_SECRET;
 
     // --- PART 1: AUTHENTICATION ---
-    // This section follows the "Authorisation Guide" document precisely.
+    // This section follows the "Authorisation Guide" documentation precisely.
     const tokenUrl = 'https://api.maersk.com/v2/oauth2/token';
     const authString = Buffer.from(`${MAERSK_KEY}:${MAERSK_SECRET}`).toString('base64');
 
@@ -34,13 +38,14 @@ exports.handler = async function(event, context) {
                 'Content-Type': 'application/x-www-form-urlencoded',
                 'Authorization': `Basic ${authString}`
             },
-            body: 'grant_type=client_credentials' // The required body content
+            body: 'grant_type=client_credentials' // The required body content.
         });
         
         const tokenData = await tokenResponse.json();
         
         if (!tokenData.access_token) {
-            // If this fails, throw the exact error from Maersk's server.
+            // If authentication fails, throw the exact error from Maersk's server.
+            // This is the error you will send to their support team.
             throw new Error(JSON.stringify(tokenData));
         }
         accessToken = tokenData.access_token;
@@ -63,12 +68,13 @@ exports.handler = async function(event, context) {
         });
 
         if (!trackingResponse.ok) {
-            return { statusCode: 404, headers: corsHeaders, body: JSON.stringify({ error: 'Tracking information not found for that number.' }) };
+            return { statusCode: trackingResponse.status, headers: corsHeaders, body: JSON.stringify({ error: `Tracking information not found. Status: ${trackingResponse.statusText}` }) };
         }
 
         const trackingData = await trackingResponse.json();
         
         // --- PART 3: FORMAT AND RETURN DATA ---
+        // This section safely formats the data for your website.
         const latest_event = (trackingData.events && trackingData.events[0]) || {};
         const current_status = latest_event.shipmentEventTypeCode || 'Status Unavailable';
         const formatted_response = {
