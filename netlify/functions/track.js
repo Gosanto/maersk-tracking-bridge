@@ -62,17 +62,20 @@ exports.handler = async function(event, context) {
     
     const sortedEvents = physicalEvents.sort((a, b) => new Date(a.eventCreatedDateTime) - new Date(b.eventCreatedDateTime));
     
-    // --- "FROM" AND "TO" LOGIC UPDATED TO USE stateRegion ---
-    
-    // 1. Find the "From" region
-    const originEvents = sortedEvents.filter(e => e.equipmentEventTypeCode === 'LOAD' || e.equipmentEventTypeCode === 'PICK');
-    const fromEventWithRegion = originEvents.find(e => (e.eventLocation || e.transportCall?.location)?.address?.stateRegion);
-    const fromLocation = fromEventWithRegion ? (fromEventWithRegion.eventLocation || fromEventWithRegion.transportCall.location).address.stateRegion : 'N/A';
+    // --- FINAL "FROM" AND "TO" LOGIC: USE PORT OF LOADING AND PORT OF DISCHARGE ---
+    const getLocationNameFromEvent = (event) => {
+        if (!event) return 'N/A';
+        const loc = event.eventLocation || event.transportCall?.location;
+        return loc?.locationName || 'N/A';
+    };
 
-    // 2. Find the "To" region
-    const destinationEvents = sortedEvents.filter(e => e.equipmentEventTypeCode === 'DISC' || e.equipmentEventTypeCode === 'DROP');
-    const toEventWithRegion = [...destinationEvents].reverse().find(e => (e.eventLocation || e.transportCall?.location)?.address?.stateRegion);
-    const toLocation = toEventWithRegion ? (toEventWithRegion.eventLocation || toEventWithRegion.transportCall.location).address.stateRegion : 'N/A';
+    // "From" is the Port of Loading (first 'LOAD' event).
+    const fromEvent = sortedEvents.find(e => e.equipmentEventTypeCode === 'LOAD');
+    const fromLocation = getLocationNameFromEvent(fromEvent);
+
+    // "To" is the Port of Discharge (last 'DISC' event).
+    const toEvent = [...sortedEvents].reverse().find(e => e.equipmentEventTypeCode === 'DISC');
+    const toLocation = getLocationNameFromEvent(toEvent);
     
     const lastEvent = sortedEvents[sortedEvents.length - 1];
     const lastUpdatedDate = new Date(lastEvent.eventCreatedDateTime);
@@ -89,8 +92,7 @@ exports.handler = async function(event, context) {
       const locationObj = event.eventLocation || event.transportCall?.location;
       return {
         locationName: locationObj?.locationName,
-        // UPDATED to use stateRegion
-        locationDetail: locationObj?.address?.stateRegion && locationObj.address.stateRegion.toLowerCase() !== locationObj.locationName.toLowerCase() ? `${locationObj.address.stateRegion}, ${locationObj.address.country}` : null,
+        locationDetail: locationObj?.address?.cityName && locationObj.address.cityName.toLowerCase() !== locationObj.locationName.toLowerCase() ? `${locationObj.address.cityName}, ${locationObj.address.country}` : null,
         icon: getIcon(event), description, vesselInfo, date: event.eventDateTime
       };
     });
@@ -105,8 +107,7 @@ exports.handler = async function(event, context) {
         return {
             id, size: isoCodeToSize[lastEventForContainer.ISOEquipmentCode] || 'Standard',
             finalStatus: finalStatusDesc,
-            // UPDATED to use stateRegion
-            finalLocation: lastLoc?.address ? `${lastLoc.address.stateRegion}, ${lastLoc.address.country}` : 'N/A',
+            finalLocation: lastLoc?.address ? `${lastLoc.address.cityName}, ${lastLoc.address.country}` : 'N/A',
             finalDate: lastEventForContainer.eventDateTime
         };
     });
