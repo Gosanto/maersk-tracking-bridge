@@ -19,10 +19,10 @@ exports.handler = async function(event, context) {
   const MAERSK_KEY = process.env.MAERSK_API_CONSUMER_KEY;
   const MAERSK_SECRET = process.env.MAERSK_API_CONSUMER_SECRET;
 
-  // --- PART 1: AUTHENTICATION (Private OAuth Flow with Robust Error Handling) ---
+  // --- PART 1: AUTHENTICATION ---
   
-  // CORRECTED: Changed v2 to v1 as per Maersk documentation
-  const tokenUrl = 'https://api.maersk.com/v1/oauth2/token'; 
+  // UPDATED: Changed the token URL based on the new documentation
+  const tokenUrl = 'https://api.maersk.com/customer-identity/oauth/v2/access_token';
   let accessToken;
 
   try {
@@ -33,7 +33,11 @@ exports.handler = async function(event, context) {
 
     const tokenResponse = await fetch(tokenUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        // UPDATED: Added the Consumer-Key header to the token request itself
+        'Consumer-Key': MAERSK_KEY 
+      },
       body: formBody.toString()
     });
 
@@ -42,26 +46,31 @@ exports.handler = async function(event, context) {
       tokenData = await tokenResponse.json();
     } catch (err) {
       const text = await tokenResponse.text();
+      // It's possible for Maersk to return non-JSON on error
+      if (!tokenResponse.ok) {
+        throw new Error(`Authentication server error (${tokenResponse.status}): ${text}`);
+      }
       throw new Error(`Failed to parse OAuth JSON. Raw response: ${text}`);
     }
+    
+    // The new endpoint might name the token field 'access_token' or just 'token'
+    accessToken = tokenData.access_token || tokenData.token; 
 
-    if (!tokenData.access_token) {
+    if (!accessToken) {
       throw new Error(`No access_token in OAuth response: ${JSON.stringify(tokenData)}`);
     }
-
-    accessToken = tokenData.access_token;
 
   } catch (error) {
     return {
       statusCode: 500,
       headers: corsHeaders,
       body: JSON.stringify({
-        error: `Authentication failed. Ensure your private Track & Trace app is whitelisted for OAuth v2. Details: ${error.message}`
+        error: `Authentication failed. Details: ${error.message}`
       })
     };
   }
 
-  // --- PART 2: FETCH TRACKING DATA (Private Endpoint) ---
+  // --- PART 2: FETCH TRACKING DATA (This part remains the same) ---
   const trackingApiUrl = `https://api.maersk.com/track-and-trace-private/events?transportDocumentReference=${trackingNumber}`;
 
   try {
@@ -79,7 +88,7 @@ exports.handler = async function(event, context) {
         statusCode: trackingResponse.status,
         headers: corsHeaders,
         body: JSON.stringify({
-          error: `Maersk Private API Error. Ensure your account is whitelisted. Raw response: ${errorText}`
+          error: `Maersk Private API Error. Raw response: ${errorText}`
         })
       };
     }
