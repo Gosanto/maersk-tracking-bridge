@@ -69,27 +69,16 @@ exports.handler = async function(event, context) {
     const fromLocationObject = fromEvent?.eventLocation || fromEvent?.transportCall?.location;
     const fromLocation = fromLocationObject?.locationName || 'N/A';
     
-    // For "To": A new hierarchical logic based on your latest instruction.
+    // For "To": Find a "Planned Arrival at a Customer Location" with NO FALLBACK.
     let toLocation = 'N/A';
-    let toEvent = null;
-
-    // 1. HIGHEST PRIORITY: Find a "Planned Arrival at a Customer Location".
-    toEvent = [...allEvents].reverse().find(e => 
+    const toEvent = [...allEvents].reverse().find(e => 
         e.eventType === 'TRANSPORT' &&
         e.eventClassifierCode === 'PLN' &&
         e.transportEventTypeCode === 'ARRI' &&
         e.transportCall?.facilityTypeCode === 'CLOC'
     );
-
-    // 2. FALLBACK: If not found, find the last "Actual Vessel Arrival" at any port.
-    if (!toEvent) {
-        toEvent = [...allEvents].reverse().find(e => 
-            e.eventType === 'TRANSPORT' && 
-            e.transportEventTypeCode === 'ARRI'
-        );
-    }
-
-    // 3. Extract the location from whichever event was found.
+    
+    // Extract the location only if the specific event was found.
     if (toEvent) {
         const toLocationObject = toEvent.eventLocation || toEvent.transportCall?.location;
         toLocation = toLocationObject?.address?.cityName || toLocationObject?.locationName || 'N/A';
