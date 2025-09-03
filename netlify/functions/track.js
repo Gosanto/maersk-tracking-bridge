@@ -19,7 +19,7 @@ exports.handler = async function(event, context) {
   const MAERSK_KEY = process.env.MAERSK_API_CONSUMER_KEY;
   const MAERSK_SECRET = process.env.MAERSK_API_CONSUMER_SECRET;
 
-  // --- PART 1: AUTHENTICATION ---
+  // --- PART 1: AUTHENTICATION (No changes needed) ---
   const tokenUrl = 'https://api.maersk.com/customer-identity/oauth/v2/access_token';
   let accessToken;
 
@@ -38,17 +38,7 @@ exports.handler = async function(event, context) {
       body: formBody.toString()
     });
 
-    let tokenData;
-    try {
-      tokenData = await tokenResponse.json();
-    } catch (err) {
-      const text = await tokenResponse.text();
-      if (!tokenResponse.ok) {
-        throw new Error(`Authentication server error (${tokenResponse.status}): ${text}`);
-      }
-      throw new Error(`Failed to parse OAuth JSON. Raw response: ${text}`);
-    }
-    
+    const tokenData = await tokenResponse.json();
     accessToken = tokenData.access_token || tokenData.token;
 
     if (!accessToken) {
@@ -59,13 +49,11 @@ exports.handler = async function(event, context) {
     return {
       statusCode: 500,
       headers: corsHeaders,
-      body: JSON.stringify({
-        error: `Authentication failed. Details: ${error.message}`
-      })
+      body: JSON.stringify({ error: `Authentication failed. Details: ${error.message}` })
     };
   }
 
-  // --- PART 2: FETCH TRACKING DATA ---
+  // --- PART 2: FETCH TRACKING DATA (No changes needed) ---
   const trackingApiUrl = `https://api.maersk.com/track-and-trace-private/events?transportDocumentReference=${trackingNumber}`;
 
   try {
@@ -82,51 +70,70 @@ exports.handler = async function(event, context) {
       return {
         statusCode: trackingResponse.status,
         headers: corsHeaders,
-        body: JSON.stringify({
-          error: `Maersk Private API Error. Raw response: ${errorText}`
-        })
+        body: JSON.stringify({ error: `Maersk API Error. Raw response: ${errorText}` })
       };
     }
 
     const trackingData = await trackingResponse.json();
 
-    // --- PART 3: FORMAT RESPONSE (UPDATED) ---
+    // --- PART 3: FORMAT RESPONSE (FINAL VERSION) ---
     
-    // Helper function to translate Maersk's event codes into plain English.
-    const getEventDescription = (code) => {
-      const descriptions = {
-        'ARVD': 'Arrival',
-        'DEPT': 'Departure',
-        'ENTG': 'Entered Gateway',
-        'EXTG': 'Exited Gateway',
-        'ARCU': 'Arrival at Customer',
-        'DECU': 'Departure from Customer',
-        'GTIN': 'Gate In',
-        'GTOU': 'Gate Out',
-        'LOAD': 'Loaded',
-        'DISC': 'Discharged',
-        'RCVD': 'Received',
-        'DLVD': 'Delivered',
-        'STUF': 'Stuffed',
-        'STRP': 'Stripped',
-        'DRFT': 'Draft Bill of Lading',
-        'OBLI': 'Original Bill of Lading Issued',
-        'RLSE': 'Released',
-        'FNLD': 'Finalized'
-      };
-      return descriptions[code] || code; // Return the full description or the code if not found
+    // Dictionaries for translating event codes based on the new documentation.
+    const shipmentEventCodes = { 'RECE': 'Received', 'DRFT': 'Drafted', 'PENA': 'Pending Approval', 'PENU': 'Pending Update', 'REJE': 'Rejected', 'APPR': 'Approved', 'ISSU': 'Issued', 'SURR': 'Surrendered', 'SUBM': 'Submitted', 'VOID': 'Void', 'CONF': 'Confirmed', 'REQS': 'Requested', 'CMPL': 'Completed', 'HOLD': 'On Hold', 'RELS': 'Released' };
+    const transportEventCodes = { 'ARRI': 'Arrived', 'DEPA': 'Departed' };
+    const equipmentEventCodes = { 'LOAD': 'Loaded', 'DISC': 'Discharged', 'GTIN': 'Gated In', 'GTOT': 'Gated Out', 'STUF': 'Stuffed', 'STRP': 'Stripped', 'PICK': 'Pick-up', 'DROP': 'Drop-off', 'RSEA': 'Resealed', 'RMVD': 'Removed', 'INSP': 'Inspected' };
+
+    // A helper function to safely build a location string.
+    const formatLocation = (loc) => {
+      if (!loc) return 'Location not provided';
+      const parts = [
+          loc.locationName,
+          loc.address?.cityName,
+          loc.address?.country
+      ].filter(Boolean); // filter(Boolean) removes any null or undefined parts.
+      return parts.length > 0 ? parts.join(', ') : 'Location details unavailable';
     };
 
-    const latest_event = (trackingData.events && trackingData.events[0]) || {};
-    const current_status = getEventDescription(latest_event.shipmentEventTypeCode) || 'Status Unavailable';
+    // Find the latest event that is 'ACT' (Actual) to use for the main status.
+    const latestActualEvent = (trackingData.events || []).find(e => e.eventClassifierCode === 'ACT') || (trackingData.events && trackingData.events[0]) || {};
+    let current_status = 'Status Unavailable';
+    if (latestActualEvent.eventType === 'SHIPMENT') {
+        current_status = shipmentEventCodes[latestActualEvent.shipmentEventTypeCode] || latestActualEvent.shipmentEventTypeCode;
+    } else if (latestActualEvent.eventType === 'TRANSPORT') {
+        current_status = transportEventCodes[latestActualEvent.transportEventTypeCode] || latestActualEvent.transportEventTypeCode;
+    } else if (latestActualEvent.eventType === 'EQUIPMENT') {
+        current_status = equipmentEventCodes[latestActualEvent.equipmentEventTypeCode] || latestActualEvent.equipmentEventTypeCode;
+    }
+
 
     const formatted_response = {
       status: current_status,
-      events: (trackingData.events || []).map(event => ({
-        date: event.eventCreatedDateTime || 'N/A',
-        description: `${getEventDescription(event.shipmentEventTypeCode)} (${event.eventType})`,
-        location: 'Location data not provided by API',
-      }))
+      events: (trackingData.events || []).map(event => {
+        let description = event.eventType; // Default description
+        let location = 'Location not provided';
+
+        // Check the eventType to decide how to process it.
+        if (event.eventType === 'SHIPMENT') {
+          description = shipmentEventCodes[event.shipmentEventTypeCode] || event.shipmentEventTypeCode;
+          // Shipment events do not have a location object in the provided schema.
+        } 
+        else if (event.eventType === 'TRANSPORT') {
+          description = transportEventCodes[event.transportEventTypeCode] || event.transportEventTypeCode;
+          // Location for transport events is nested inside transportCall.
+          location = formatLocation(event.transportCall?.location);
+        } 
+        else if (event.eventType === 'EQUIPMENT') {
+          description = equipmentEventCodes[event.equipmentEventTypeCode] || event.equipmentEventTypeCode;
+          // Equipment events have a top-level eventLocation object.
+          location = formatLocation(event.eventLocation);
+        }
+
+        return {
+          date: event.eventCreatedDateTime || 'N/A',
+          description: `${description} (${event.eventClassifierCode})`, // Adding PLN, ACT, or EST for context
+          location: location,
+        };
+      })
     };
 
     return {
@@ -139,9 +146,7 @@ exports.handler = async function(event, context) {
     return {
       statusCode: 500,
       headers: corsHeaders,
-      body: JSON.stringify({
-        error: `An internal error occurred while fetching tracking data: ${error.message}`
-      })
+      body: JSON.stringify({ error: `An internal error occurred: ${error.message}` })
     };
   }
 };
