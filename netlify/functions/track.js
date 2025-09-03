@@ -61,24 +61,20 @@ exports.handler = async function(event, context) {
     }
     
     const sortedEvents = physicalEvents.sort((a, b) => new Date(a.eventCreatedDateTime) - new Date(b.eventCreatedDateTime));
-    const lastEvent = sortedEvents[sortedEvents.length - 1];
     
-    // --- DEFINITIVE "FROM" and "TO" LOGIC PER YOUR INSTRUCTIONS ---
-    const getLocationFromEvent = (event) => {
-        if (!event) return 'N/A';
-        const loc = event.eventLocation || event.transportCall?.location;
-        // Prioritize the city name, but fall back to the terminal/location name if the city is not available.
-        return loc?.address?.cityName || loc?.locationName || 'N/A';
-    };
+    // --- FINAL "FROM" AND "TO" LOGIC TO FIND CITY NAMES ---
+    
+    // 1. Find the "From" city
+    const originEvents = sortedEvents.filter(e => e.equipmentEventTypeCode === 'LOAD' || e.equipmentEventTypeCode === 'PICK');
+    const fromEventWithCity = originEvents.find(e => (e.eventLocation || e.transportCall?.location)?.address?.cityName);
+    const fromLocation = fromEventWithCity ? (fromEventWithCity.eventLocation || fromEventWithCity.transportCall.location).address.cityName : 'N/A';
 
-    // "From" is the location of the first "LOAD" or "PICK" event.
-    const fromEvent = sortedEvents.find(e => e.equipmentEventTypeCode === 'LOAD' || e.equipmentEventTypeCode === 'PICK');
-    const fromLocation = getLocationFromEvent(fromEvent);
-
-    // "To" is the location of the last "DISC" or "DROP" event.
-    const toEvent = [...sortedEvents].reverse().find(e => e.equipmentEventTypeCode === 'DISC' || e.equipmentEventTypeCode === 'DROP');
-    const toLocation = getLocationFromEvent(toEvent);
-
+    // 2. Find the "To" city
+    const destinationEvents = sortedEvents.filter(e => e.equipmentEventTypeCode === 'DISC' || e.equipmentEventTypeCode === 'DROP');
+    const toEventWithCity = [...destinationEvents].reverse().find(e => (e.eventLocation || e.transportCall?.location)?.address?.cityName);
+    const toLocation = toEventWithCity ? (toEventWithCity.eventLocation || toEventWithCity.transportCall.location).address.cityName : 'N/A';
+    
+    const lastEvent = sortedEvents[sortedEvents.length - 1];
     const lastUpdatedDate = new Date(lastEvent.eventCreatedDateTime);
     const daysAgo = Math.round((new Date() - lastUpdatedDate) / (1000 * 60 * 60 * 24));
     const lastUpdatedText = daysAgo <= 0 ? 'Today' : `${daysAgo} day${daysAgo === 1 ? '' : 's'} ago`;
