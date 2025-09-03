@@ -62,18 +62,19 @@ exports.handler = async function(event, context) {
     
     const physicalEvents = allEvents.filter(e => e.eventType !== 'SHIPMENT');
     
-    // --- FINAL "FROM" AND "TO" LOGIC PER YOUR INSTRUCTIONS ---
+    // --- FINAL "FROM" AND "TO" LOGIC ---
     
-    // For "From": Find the location of the very first "Vessel Departure" (DEPA) event.
+    // "From" is the location of the very first "Vessel Departure" (DEPA) event.
     const fromEvent = allEvents.find(e => e.transportEventTypeCode === 'DEPA');
     const fromLocationObject = fromEvent?.eventLocation || fromEvent?.transportCall?.location;
     const fromLocation = fromLocationObject?.locationName || 'N/A';
     
-    // For "To": Find the city/location of the very last physical event.
-    const lastPhysicalEvent = physicalEvents.length > 0 ? physicalEvents[physicalEvents.length - 1] : null;
-    const destinationLocationObject = lastPhysicalEvent?.eventLocation || lastPhysicalEvent?.transportCall?.location;
-    const toLocation = destinationLocationObject?.address?.cityName || destinationLocationObject?.locationName || 'N/A';
+    // "To" is the location of the last "Vessel Arrival" (ARRI) event.
+    const toEvent = [...allEvents].reverse().find(e => e.transportEventTypeCode === 'ARRI');
+    const toLocationObject = toEvent?.eventLocation || toEvent?.transportCall?.location;
+    const toLocation = toLocationObject?.address?.cityName || toLocationObject?.locationName || 'N/A';
 
+    const lastPhysicalEvent = physicalEvents.length > 0 ? physicalEvents[physicalEvents.length - 1] : null;
     const lastUpdatedDate = new Date(lastPhysicalEvent.eventCreatedDateTime);
     const daysAgo = Math.round((new Date() - lastUpdatedDate) / (1000 * 60 * 60 * 24));
     const lastUpdatedText = daysAgo <= 0 ? 'Today' : `${daysAgo} day${daysAgo === 1 ? '' : 's'} ago`;
