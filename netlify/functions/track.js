@@ -19,6 +19,12 @@ const getIcon = (event) => {
   return 'container';
 };
 
+const UN_LOCATION_MAP = {
+    'SAJED': 'Jeddah, Saudi Arabia',
+    'EGPSD': 'Port Said, Egypt',
+    'TRKMX': 'Ambarli, Turkey'
+};
+
 exports.handler = async function(event, context) {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers: corsHeaders, body: 'Success' };
   if (event.httpMethod !== 'POST') return { statusCode: 405, headers: corsHeaders, body: 'Method Not Allowed' };
@@ -68,21 +74,9 @@ exports.handler = async function(event, context) {
     const fromLocation = fromEvent?.transportCall?.location?.locationName || 'N/A';
     
     const toEvent = [...allEvents].reverse().find(e => e.eventType === 'TRANSPORT' && e.transportCall?.modeOfTransport === 'VESSEL' && e.transportEventTypeCode === 'ARRI');
-    const UN_LOCATION_MAP = { 'SAJED': 'Jeddah', 'EGPSD': 'Port Said', 'TRKMX': 'Ambarli' };
     const destinationUNCode = toEvent?.transportCall?.UNLocationCode;
     const toLocation = UN_LOCATION_MAP[destinationUNCode] || toEvent?.transportCall?.location?.locationName || 'N/A';
-
-    // --- UPDATED ETA LOGIC ---
-    // First, look for a specific "Estimated Arrival" event.
-    let etaDate = null;
-    const etaEvent = [...allEvents].reverse().find(e => e.transportEventTypeCode === 'ARRI' && e.eventClassifierCode === 'EST');
-    if (etaEvent) {
-        etaDate = etaEvent.eventDateTime;
-    } else if (lastPhysicalEvent) {
-        // If not found, fall back to the date of the last known actual event.
-        etaDate = lastPhysicalEvent.eventDateTime;
-    }
-
+    
     const lastUpdatedDate = new Date(lastPhysicalEvent.eventCreatedDateTime);
     const daysAgo = Math.round((new Date() - lastUpdatedDate) / (1000 * 60 * 60 * 24));
     const lastUpdatedText = daysAgo <= 0 ? 'Today' : `${daysAgo} day${daysAgo === 1 ? '' : 's'} ago`;
@@ -91,16 +85,35 @@ exports.handler = async function(event, context) {
     const containerEvents = physicalEvents.filter(e => e.equipmentReference);
     const uniqueContainerIds = [...new Set(containerEvents.map(e => e.equipmentReference))];
     const containers = uniqueContainerIds.map(id => {
-        const physicalForContainer = physicalEvents.filter(e => e.equipmentReference === id);
+        const eventsForThisContainer = allEvents.filter(e => e.equipmentReference === id);
+        const physicalForContainer = eventsForThisContainer.filter(e => e.eventType !== 'SHIPMENT');
         const lastActualEventForContainer = physicalForContainer[physicalForContainer.length - 1];
+        
+        // --- FINAL ETA LOGIC ---
+        // First, look for a specific "Estimated Arrival" event.
+        const etaEvent = [...eventsForThisContainer].reverse().find(e => e.transportEventTypeCode === 'ARRI' && e.eventClassifierCode === 'EST');
+        // If not found, fall back to the date of the last known actual event.
+        const etaDate = etaEvent?.eventDateTime || lastActualEventForContainer?.eventDateTime || null;
+
+        // --- FINAL LATEST EVENT LOGIC ---
         const lastLoc = lastActualEventForContainer?.eventLocation || lastActualEventForContainer?.transportCall?.location;
         const eventCode = lastActualEventForContainer?.equipmentEventTypeCode || lastActualEventForContainer?.transportEventTypeCode;
+        
+        let latestEventDescription = eventDescriptions[eventCode] || eventCode;
+        // Special rule: If the last event is a "Gate In" of an "Empty" container, describe it as "Empty container return".
+        if (lastActualEventForContainer?.eventType === 'EQUIPMENT' && eventCode === 'GTIN' && lastActualEventForContainer?.emptyIndicatorCode === 'EMPTY') {
+            latestEventDescription = 'Empty container return';
+        }
+
+        const latestEventLocationUNCode = lastLoc?.UNLocationCode;
+        const latestEventLocation = UN_LOCATION_MAP[latestEventLocationUNCode] || lastLoc?.locationName || 'N/A';
+        
         return {
             id, size: isoCodeToSize[lastActualEventForContainer?.ISOEquipmentCode] || 'Standard',
-            eta: { date: etaDate, label: "Estimated arrival date" }, // Use the globally calculated ETA date
+            eta: { date: etaDate, label: "Estimated arrival date" },
             latestEvent: {
-                description: eventDescriptions[eventCode] || eventCode,
-                location: lastLoc?.address ? `${lastLoc.address.cityName}, ${lastLoc.address.country}` : (lastLoc?.locationName || 'N/A'),
+                description: latestEventDescription,
+                location: latestEventLocation,
                 date: lastActualEventForContainer?.eventDateTime
             }
         };
