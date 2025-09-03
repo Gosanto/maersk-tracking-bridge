@@ -14,14 +14,17 @@ const eventDescriptions = {
 };
 const isoCodeToSize = { '45G1': "40' Dry High", '22G1': "20' Dry", '42G1': "40' Dry" };
 const getIcon = (event) => {
-  if (event.eventType === 'TRANSPORT' || event.transportCall?.modeOfTransport === 'VESSEL') return 'vessel';
+  if (event.eventType === 'TRANSPORT' && event.transportCall?.modeOfTransport === 'VESSEL') return 'vessel';
   if (['GTOT', 'GTIN', 'PICK'].includes(event.equipmentEventTypeCode) || event.transportCall?.modeOfTransport === 'TRUCK') return 'truck';
   return 'container';
 };
 
+// --- UPDATED: Main lookup table for UN Location Codes ---
 const UN_LOCATION_MAP = {
-    'SAJED': 'JEDDAH', 'EGPSD': 'PORT SAID EAST', 'TRKMX': 'AMBARLI PORT ISTANBUL',
-    // Add other UN Location Codes and their primary display names here
+    'SAJED': 'Jeddah',
+    'EGPSD': 'Port Said East',
+    'TRKMX': 'Ambarli Port Istanbul',
+    'TRAMR': 'Ambarli Port Istanbul' // Another code for the same port area
 };
 
 exports.handler = async function(event, context) {
@@ -65,7 +68,6 @@ exports.handler = async function(event, context) {
         return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ summary: { blNumber: trackingNumber } }) };
     }
     
-    // UPDATED: Filter for ACTUAL physical events for the transport plan
     const actualPhysicalEvents = allEvents.filter(e => e.eventType !== 'SHIPMENT' && e.eventClassifierCode === 'ACT');
     const lastPhysicalEvent = actualPhysicalEvents.length > 0 ? actualPhysicalEvents[actualPhysicalEvents.length - 1] : null;
 
@@ -108,7 +110,7 @@ exports.handler = async function(event, context) {
         };
     });
     
-    // --- Transport Plan (with smarter descriptions and location structure) ---
+    // --- UPDATED: Transport Plan now generates primary/secondary location names ---
     const transportPlan = actualPhysicalEvents.map(event => {
       const eventCode = event.equipmentEventTypeCode || event.transportEventTypeCode;
       let description = eventDescriptions[eventCode] || eventCode;
@@ -123,8 +125,9 @@ exports.handler = async function(event, context) {
       }
       const locationObj = event.eventLocation || event.transportCall?.location;
       
-      const primaryLocation = UN_LOCATION_MAP[locationObj?.UNLocationCode] || locationObj?.address?.cityName || locationObj?.locationName;
-      const secondaryLocation = (locationObj?.address?.cityName || locationObj?.locationName) !== primaryLocation ? locationObj?.locationName : null;
+      const unCode = locationObj?.UNLocationCode;
+      const primaryLocation = UN_LOCATION_MAP[unCode] || locationObj?.locationName;
+      const secondaryLocation = locationObj?.locationName !== primaryLocation ? locationObj.locationName : null;
 
       return {
         primaryLocation, secondaryLocation,
