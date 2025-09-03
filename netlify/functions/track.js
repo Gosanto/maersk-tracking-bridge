@@ -34,68 +34,33 @@ exports.handler = async function(event, context) {
   }
 
   try {
+    // Fetch ALL events - the filter is removed
     const trackingApiUrl = `https://api.maersk.com/track-and-trace-private/events?transportDocumentReference=${trackingNumber}`;
     const trackingResponse = await fetch(trackingApiUrl, {
       method: 'GET',
       headers: { 'Authorization': `Bearer ${accessToken}`, 'Consumer-Key': MAERSK_KEY }
     });
-    if (!trackingResponse.ok) throw new Error(`Maersk API Error (${trackingResponse.status})`);
+    
+    // Check for Maersk API errors and return their response directly
+    if (!trackingResponse.ok) {
+        const errorText = await trackingResponse.text();
+        throw new Error(`Maersk API Error (${trackingResponse.status}): ${errorText}`);
+    }
     
     const trackingData = await trackingResponse.json();
-    const allEvents = (trackingData.events || []).sort((a, b) => new Date(a.eventCreatedDateTime) - new Date(b.eventCreatedDateTime));
     
-    if (allEvents.length === 0) {
-        return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ message: "No events found." }) };
-    }
-
-    // Helper to extract a clean location object from an event
-    const getLocationObject = (event) => {
-        if (!event) return null;
-        const loc = event.eventLocation || event.transportCall?.location;
-        if (!loc) return null;
-        return {
-            locationName: loc.locationName || null,
-            cityName: loc.address?.cityName || null,
-            stateRegion: loc.address?.stateRegion || null,
-            country: loc.address?.country || null,
-            UNLocationCode: loc.UNLocationCode || null
-        };
-    };
-
-    // --- Find each candidate event ---
-
-    // Candidate 1: Last Vessel Arrival
-    const lastTransportArrival = [...allEvents].reverse().find(e => e.transportEventTypeCode === 'ARRI');
-
-    // Candidate 2: Last Equipment Discharge
-    const lastEquipmentDischarge = [...allEvents].reverse().find(e => e.equipmentEventTypeCode === 'DISC');
-    
-    // Candidate 3: Last Equipment Drop-off
-    const lastEquipmentDropOff = [...allEvents].reverse().find(e => e.equipmentEventTypeCode === 'DROP');
-
-    // Candidate 4: Planned Arrival at Customer Location
-    const plannedArrivalAtCustomer = [...allEvents].reverse().find(e => 
-        e.eventType === 'TRANSPORT' &&
-        e.eventClassifierCode === 'PLN' &&
-        e.transportEventTypeCode === 'ARRI' &&
-        e.transportCall?.facilityTypeCode === 'CLOC'
-    );
-    
-    // Build a clean report
-    const report = {
-        lastVesselArrival: getLocationObject(lastTransportArrival),
-        lastEquipmentDischarge: getLocationObject(lastEquipmentDischarge),
-        lastEquipmentDropOff: getLocationObject(lastEquipmentDropOff),
-        plannedArrivalAtCustomer: getLocationObject(plannedArrivalAtCustomer),
-    };
-
+    // Return the entire raw data object, formatted to be readable
     return {
       statusCode: 200,
       headers: corsHeaders,
-      body: JSON.stringify(report, null, 2) 
+      body: JSON.stringify(trackingData, null, 2) 
     };
 
   } catch (error) {
-    return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: `An internal error occurred: ${error.message}` }, null, 2) };
+    return { 
+        statusCode: 500, 
+        headers: corsHeaders, 
+        body: JSON.stringify({ error: `An internal error occurred: ${error.message}` }, null, 2) 
+    };
   }
 };
