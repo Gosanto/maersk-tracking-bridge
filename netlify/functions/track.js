@@ -7,6 +7,7 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS'
 };
 
+// --- Dictionaries & Helpers ---
 const eventDescriptions = {
   'GTIN': 'Gate in', 'GTOT': 'Gate out Empty', 'LOAD': 'Load', 'DISC': 'Discharge',
   'PICK': 'Gate out for delivery', 'DROP': 'Empty container return',
@@ -54,43 +55,51 @@ exports.handler = async function(event, context) {
     if (!trackingResponse.ok) throw new Error(`Maersk API Error (${trackingResponse.status})`);
     
     const trackingData = await trackingResponse.json();
-    const allEvents = (trackingData.events || []);
+    const allEvents = (trackingData.events || []).sort((a, b) => new Date(a.eventCreatedDateTime) - new Date(b.eventCreatedDateTime));
     
     if (allEvents.length === 0) {
-        return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ summary: { blNumber: trackingNumber, from: 'N/A', to: 'N/A' }, transportPlan: [] }) };
+        return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ summary: { blNumber: trackingNumber } }) };
     }
     
-    const sortedEvents = allEvents.sort((a, b) => new Date(a.eventCreatedDateTime) - new Date(b.eventCreatedDateTime));
-    const physicalEvents = sortedEvents.filter(e => e.eventType !== 'SHIPMENT');
-    const lastPhysicalEvent = physicalEvents.length > 0 ? physicalEvents[physicalEvents.length - 1] : null;
+    const physicalEvents = allEvents.filter(e => e.eventType !== 'SHIPMENT');
 
-    // --- DEFINITIVE "FROM" and "TO" LOGIC PER YOUR FINAL INSTRUCTIONS ---
-    const getLocationNameFromEvent = (event) => {
-        if (!event) return 'N/A';
-        const loc = event.eventLocation || event.transportCall?.location;
-        return loc?.address?.cityName || loc?.locationName || 'N/A';
-    };
+    // --- Build Summary: "From" and "To" Locations ---
+    const originEvent = allEvents.find(e => e.transportCall?.facilityTypeCode === 'CLOC' || e.transportCall?.facilityTypeCode === 'INTE');
+    const firstLoadEvent = physicalEvents.find(e => e.equipmentEventTypeCode === 'LOAD');
+    const fromLocation = originEvent?.transportCall?.location?.locationName || firstLoadEvent?.eventLocation?.locationName || 'N/A';
 
-    // "From" is the "Pick up: Inland location".
-    // We prioritize a PICK event at an Inland (INTE) or Customer (CLOC) facility.
-    let fromEvent = sortedEvents.find(e => 
-        e.equipmentEventTypeCode === 'PICK' && 
-        ['INTE', 'CLOC'].includes(e.transportCall?.facilityTypeCode)
-    );
-    // If not found, fall back to the very first PICK event, regardless of facility type.
-    if (!fromEvent) {
-        fromEvent = sortedEvents.find(e => e.equipmentEventTypeCode === 'PICK');
-    }
-    const fromLocation = getLocationNameFromEvent(fromEvent);
+    const finalDropEvent = [...physicalEvents].reverse().find(e => e.equipmentEventTypeCode === 'DROP');
+    const toLocation = finalDropEvent?.eventLocation?.address?.cityName || finalDropEvent?.eventLocation?.locationName || 'N/A';
 
-    // "To" is the "Arrival: Last port of discharge". This means we find the last DISC event.
-    const toEvent = [...physicalEvents].reverse().find(e => e.equipmentEventTypeCode === 'DISC');
-    const toLocation = getLocationNameFromEvent(toEvent);
-    
-    const lastUpdatedDate = new Date(lastPhysicalEvent.eventCreatedDateTime);
-    const daysAgo = Math.round((new Date() - lastUpdatedDate) / (1000 * 60 * 60 * 24));
-    const lastUpdatedText = daysAgo <= 0 ? 'Today' : `${daysAgo} day${daysAgo === 1 ? '' : 's'} ago`;
+    // --- Build Container Details ---
+    const containerEvents = physicalEvents.filter(e => e.equipmentReference);
+    const uniqueContainerIds = [...new Set(containerEvents.map(e => e.equipmentReference))];
+    const containers = uniqueContainerIds.map(id => {
+        const eventsForThisContainer = allEvents.filter(e => e.equipmentReference === id);
+        const physicalEventsForContainer = eventsForThisContainer.filter(e => e.eventType !== 'SHIPMENT');
+        const lastActualEvent = physicalEventsForContainer[physicalEventsForContainer.length - 1];
+        
+        const etaEvent = [...eventsForThisContainer].reverse().find(e => e.transportEventTypeCode === 'ARRI' && e.eventClassifierCode === 'EST');
+        
+        const lastLoc = lastActualEvent?.eventLocation || lastActualEvent?.transportCall?.location;
+        const eventCode = lastActualEvent?.equipmentEventTypeCode || lastActualEvent?.transportEventTypeCode;
 
+        return {
+            id: id,
+            size: isoCodeToSize[lastActualEvent?.ISOEquipmentCode] || 'Standard',
+            eta: {
+                date: etaEvent?.eventDateTime || null,
+                label: "Estimated arrival date"
+            },
+            latestEvent: {
+                description: eventDescriptions[eventCode] || eventCode,
+                location: lastLoc?.address ? `${lastLoc.address.cityName}, ${lastLoc.address.country}` : (lastLoc?.locationName || 'N/A'),
+                date: lastActualEvent?.eventDateTime
+            }
+        };
+    });
+
+    // --- Build Transport Plan ---
     const transportPlan = physicalEvents.map(event => {
       const eventCode = event.equipmentEventTypeCode || event.transportEventTypeCode;
       let description = eventDescriptions[eventCode] || eventCode;
@@ -101,29 +110,16 @@ exports.handler = async function(event, context) {
       const locationObj = event.eventLocation || event.transportCall?.location;
       return {
         locationName: locationObj?.locationName,
-        locationDetail: locationObj?.address?.cityName && locationObj.address.cityName.toLowerCase() !== locationObj.locationName.toLowerCase() ? `${locationObj.address.cityName}, ${locationObj.address.country}` : null,
+        locationDetail: locationObj?.address?.cityName ? `${locationObj.address.cityName}, ${locationObj.address.country}` : null,
         icon: getIcon(event), description, vesselInfo, date: event.eventDateTime
       };
     });
-    
-    const containerEvents = physicalEvents.filter(e => e.equipmentReference);
-    const uniqueContainerIds = [...new Set(containerEvents.map(e => e.equipmentReference))];
-    const containers = uniqueContainerIds.map(id => {
-        const lastEventForContainer = [...containerEvents].reverse().find(e => e.equipmentReference === id);
-        const eventCode = lastEventForContainer.equipmentEventTypeCode;
-        const lastLoc = lastEventForContainer.eventLocation || lastEventForContainer.transportCall?.location;
-        const finalStatusDesc = eventDescriptions[eventCode] || eventCode;
-        return {
-            id, size: isoCodeToSize[lastEventForContainer.ISOEquipmentCode] || 'Standard',
-            finalStatus: finalStatusDesc,
-            finalLocation: lastLoc?.address ? `${lastLoc.address.cityName}, ${lastLoc.address.country}` : 'N/A',
-            finalDate: lastEventForContainer.eventDateTime
-        };
-    });
 
+    // --- Assemble Final Response ---
     const finalResponse = {
       summary: { blNumber: trackingNumber, from: fromLocation, to: toLocation },
-      lastUpdated: lastUpdatedText, containers, transportPlan
+      containers: containers,
+      transportPlan: transportPlan
     };
 
     return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(finalResponse) };
