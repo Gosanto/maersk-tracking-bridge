@@ -7,18 +7,6 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS'
 };
 
-const eventDescriptions = {
-  'GTIN': 'Gate in', 'GTOT': 'Gate out Empty', 'LOAD': 'Load', 'DISC': 'Discharge',
-  'PICK': 'Gate out for delivery', 'DROP': 'Empty container return',
-  'DEPA': 'Vessel departure', 'ARRI': 'Vessel arrival',
-};
-const isoCodeToSize = { '45G1': "40' Dry High", '22G1': "20' Dry", '42G1': "40' Dry" };
-const getIcon = (event) => {
-  if (event.eventType === 'TRANSPORT') return 'vessel';
-  if (['GTOT', 'GTIN', 'PICK'].includes(event.equipmentEventTypeCode)) return 'truck';
-  return 'container';
-};
-
 exports.handler = async function(event, context) {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers: corsHeaders, body: 'Success' };
   if (event.httpMethod !== 'POST') return { statusCode: 405, headers: corsHeaders, body: 'Method Not Allowed' };
@@ -57,91 +45,57 @@ exports.handler = async function(event, context) {
     const allEvents = (trackingData.events || []).sort((a, b) => new Date(a.eventCreatedDateTime) - new Date(b.eventCreatedDateTime));
     
     if (allEvents.length === 0) {
-        return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ summary: { blNumber: trackingNumber } }) };
+        return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ message: "No events found." }) };
     }
+
+    // Helper to extract a clean location object from an event
+    const getLocationObject = (event) => {
+        if (!event) return null;
+        const loc = event.eventLocation || event.transportCall?.location;
+        if (!loc) return null;
+        return {
+            locationName: loc.locationName || null,
+            cityName: loc.address?.cityName || null,
+            stateRegion: loc.address?.stateRegion || null,
+            country: loc.address?.country || null,
+            UNLocationCode: loc.UNLocationCode || null
+        };
+    };
+
+    // --- Find each candidate event ---
+
+    // Candidate 1: Last Vessel Arrival
+    const lastTransportArrival = [...allEvents].reverse().find(e => e.transportEventTypeCode === 'ARRI');
+
+    // Candidate 2: Last Equipment Discharge
+    const lastEquipmentDischarge = [...allEvents].reverse().find(e => e.equipmentEventTypeCode === 'DISC');
     
-    const physicalEvents = allEvents.filter(e => e.eventType !== 'SHIPMENT');
-    
-    // --- "FROM" AND "TO" LOGIC ---
-    
-    // "From" is the location of the very first "Vessel Departure" (DEPA) event.
-    const fromEvent = allEvents.find(e => e.transportEventTypeCode === 'DEPA');
-    const fromLocationObject = fromEvent?.eventLocation || fromEvent?.transportCall?.location;
-    const fromLocation = fromLocationObject?.locationName || 'N/A';
-    
-    // For "To": Find a "Planned Arrival at a Customer Location" with NO FALLBACK.
-    let toLocation = 'N/A';
-    const toEvent = [...allEvents].reverse().find(e => 
+    // Candidate 3: Last Equipment Drop-off
+    const lastEquipmentDropOff = [...allEvents].reverse().find(e => e.equipmentEventTypeCode === 'DROP');
+
+    // Candidate 4: Planned Arrival at Customer Location
+    const plannedArrivalAtCustomer = [...allEvents].reverse().find(e => 
         e.eventType === 'TRANSPORT' &&
         e.eventClassifierCode === 'PLN' &&
         e.transportEventTypeCode === 'ARRI' &&
         e.transportCall?.facilityTypeCode === 'CLOC'
     );
     
-    // Extract the location only if the specific event was found.
-    if (toEvent) {
-        const toLocationObject = toEvent.eventLocation || toEvent.transportCall?.location;
-        toLocation = toLocationObject?.address?.cityName || toLocationObject?.locationName || 'N/A';
-    }
-
-
-    const lastPhysicalEvent = physicalEvents.length > 0 ? physicalEvents[physicalEvents.length - 1] : null;
-    const lastUpdatedDate = new Date(lastPhysicalEvent.eventCreatedDateTime);
-    const daysAgo = Math.round((new Date() - lastUpdatedDate) / (1000 * 60 * 60 * 24));
-    const lastUpdatedText = daysAgo <= 0 ? 'Today' : `${daysAgo} day${daysAgo === 1 ? '' : 's'} ago`;
-
-    // --- Container Details ---
-    const containerEvents = physicalEvents.filter(e => e.equipmentReference);
-    const uniqueContainerIds = [...new Set(containerEvents.map(e => e.equipmentReference))];
-    const containers = uniqueContainerIds.map(id => {
-        const eventsForThisContainer = allEvents.filter(e => e.equipmentReference === id);
-        const physicalForContainer = eventsForThisContainer.filter(e => e.eventType !== 'SHIPMENT');
-        const lastActualEventForContainer = physicalForContainer[physicalForContainer.length - 1];
-        
-        const etaEvent = [...eventsForThisContainer].reverse().find(e => e.transportEventTypeCode === 'ARRI' && e.eventClassifierCode === 'EST');
-        
-        const lastLoc = lastActualEventForContainer?.eventLocation || lastActualEventForContainer?.transportCall?.location;
-        const eventCode = lastActualEventForContainer?.equipmentEventTypeCode || lastActualEventForContainer?.transportEventTypeCode;
-        
-        return {
-            id: id,
-            size: isoCodeToSize[lastActualEventForContainer?.ISOEquipmentCode] || 'Standard',
-            eta: {
-                date: etaEvent?.eventDateTime || null,
-                label: "Estimated arrival date"
-            },
-            latestEvent: {
-                description: eventDescriptions[eventCode] || eventCode,
-                location: lastLoc?.address ? `${lastLoc.address.cityName}, ${lastLoc.address.country}` : (lastLoc?.locationName || 'N/A'),
-                date: lastActualEventForContainer?.eventDateTime
-            }
-        };
-    });
-
-    const transportPlan = physicalEvents.map(event => {
-      const eventCode = event.equipmentEventTypeCode || event.transportEventTypeCode;
-      let description = eventDescriptions[eventCode] || eventCode;
-      let vesselInfo = null;
-      if (event.eventType === 'TRANSPORT' && event.transportCall?.vessel?.vesselName) {
-        vesselInfo = `${event.transportCall.vessel.vesselName} / ${event.transportCall.exportVoyageNumber}`;
-      }
-      const locationObj = event.eventLocation || event.transportCall?.location;
-      return {
-        locationName: locationObj?.locationName,
-        locationDetail: locationObj?.address?.cityName && locationObj.address.cityName.toLowerCase() !== locationObj.locationName.toLowerCase() ? `${locationObj.address.cityName}, ${locationObj.address.country}` : null,
-        icon: getIcon(event), description, vesselInfo, date: event.eventDateTime
-      };
-    });
-
-    const finalResponse = {
-      summary: { blNumber: trackingNumber, from: fromLocation, to: toLocation },
-      containers: containers,
-      transportPlan: transportPlan
+    // Build a clean report
+    const report = {
+        lastVesselArrival: getLocationObject(lastTransportArrival),
+        lastEquipmentDischarge: getLocationObject(lastEquipmentDischarge),
+        lastEquipmentDropOff: getLocationObject(lastEquipmentDropOff),
+        plannedArrivalAtCustomer: getLocationObject(plannedArrivalAtCustomer),
     };
 
-    return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(finalResponse) };
+    return {
+      statusCode: 200,
+      headers: corsHeaders,
+      body: JSON.stringify(report, null, 2) 
+    };
 
   } catch (error) {
-    return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: `An internal error occurred: ${error.message}` }) };
+    return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: `An internal error occurred: ${error.message}` }, null, 2) };
   }
 };
