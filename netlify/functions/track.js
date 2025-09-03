@@ -53,24 +53,32 @@ exports.handler = async function(event, context) {
     });
     if (!trackingResponse.ok) throw new Error(`Maersk API Error (${trackingResponse.status})`);
     
-    // The entire JSON response from Maersk, not just the events
     const trackingData = await trackingResponse.json();
-    
-    // --- CORRECT "FROM" and "TO" LOGIC ---
-    // Access the shipper and consignee directly from the main response object.
-    // Optional chaining (?.) is used for safety in case these fields don't exist.
-    const fromLocation = trackingData.shipper?.address?.cityName || 'N/A';
-    const toLocation = trackingData.consignee?.address?.cityName || 'N/A';
-    
     const physicalEvents = (trackingData.events || []);
     
     if (physicalEvents.length === 0) {
-        return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ summary: { blNumber: trackingNumber, from: fromLocation, to: toLocation }, transportPlan: [] }) };
+        return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ summary: { blNumber: trackingNumber, from: 'N/A', to: 'N/A' }, transportPlan: [] }) };
     }
     
     const sortedEvents = physicalEvents.sort((a, b) => new Date(a.eventCreatedDateTime) - new Date(b.eventCreatedDateTime));
     const lastEvent = sortedEvents[sortedEvents.length - 1];
     
+    // --- DEFINITIVE "FROM" and "TO" LOGIC PER YOUR INSTRUCTIONS ---
+    const getLocationFromEvent = (event) => {
+        if (!event) return 'N/A';
+        const loc = event.eventLocation || event.transportCall?.location;
+        // Prioritize the city name, but fall back to the terminal/location name if the city is not available.
+        return loc?.address?.cityName || loc?.locationName || 'N/A';
+    };
+
+    // "From" is the location of the first "LOAD" or "PICK" event.
+    const fromEvent = sortedEvents.find(e => e.equipmentEventTypeCode === 'LOAD' || e.equipmentEventTypeCode === 'PICK');
+    const fromLocation = getLocationFromEvent(fromEvent);
+
+    // "To" is the location of the last "DISC" or "DROP" event.
+    const toEvent = [...sortedEvents].reverse().find(e => e.equipmentEventTypeCode === 'DISC' || e.equipmentEventTypeCode === 'DROP');
+    const toLocation = getLocationFromEvent(toEvent);
+
     const lastUpdatedDate = new Date(lastEvent.eventCreatedDateTime);
     const daysAgo = Math.round((new Date() - lastUpdatedDate) / (1000 * 60 * 60 * 24));
     const lastUpdatedText = daysAgo <= 0 ? 'Today' : `${daysAgo} day${daysAgo === 1 ? '' : 's'} ago`;
