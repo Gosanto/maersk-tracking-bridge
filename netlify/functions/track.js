@@ -14,17 +14,15 @@ const eventDescriptions = {
 };
 const isoCodeToSize = { '45G1': "40' Dry High", '22G1': "20' Dry", '42G1': "40' Dry" };
 const getIcon = (event) => {
-  if (event.eventType === 'TRANSPORT' && event.transportCall?.modeOfTransport === 'VESSEL') return 'vessel';
-  if (['GTOT', 'GTIN', 'PICK'].includes(event.equipmentEventTypeCode) || event.transportCall?.modeOfTransport === 'TRUCK') return 'truck';
+  const eventCode = event.equipmentEventTypeCode;
+  if (event.eventType === 'TRANSPORT' || ['LOAD', 'DISC'].includes(eventCode)) return 'vessel';
+  if (['GTOT', 'GTIN', 'PICK'].includes(eventCode) || event.transportCall?.modeOfTransport === 'TRUCK') return 'truck';
   return 'container';
 };
 
-// --- UPDATED: Main lookup table for UN Location Codes ---
 const UN_LOCATION_MAP = {
-    'SAJED': 'Jeddah',
-    'EGPSD': 'Port Said East',
-    'TRKMX': 'Ambarli Port Istanbul',
-    'TRAMR': 'Ambarli Port Istanbul' // Another code for the same port area
+    'SAJED': 'JEDDAH', 'EGPSD': 'PORT SAID EAST', 'TRKMX': 'AMBARLI PORT ISTANBUL',
+    'TRAMR': 'Ambarli Port Istanbul'
 };
 
 exports.handler = async function(event, context) {
@@ -62,7 +60,8 @@ exports.handler = async function(event, context) {
     if (!trackingResponse.ok) throw new Error(`Maersk API Error (${trackingResponse.status})`);
     
     const trackingData = await trackingResponse.json();
-    const allEvents = (trackingData.events || []).sort((a, b) => new Date(a.eventCreatedDateTime) - new Date(b.eventCreatedDateTime));
+    // CRITICAL FIX: Sort by eventDateTime, the actual time of the event.
+    const allEvents = (trackingData.events || []).sort((a, b) => new Date(a.eventDateTime) - new Date(b.eventDateTime));
     
     if (allEvents.length === 0) {
         return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ summary: { blNumber: trackingNumber } }) };
@@ -71,7 +70,6 @@ exports.handler = async function(event, context) {
     const actualPhysicalEvents = allEvents.filter(e => e.eventType !== 'SHIPMENT' && e.eventClassifierCode === 'ACT');
     const lastPhysicalEvent = actualPhysicalEvents.length > 0 ? actualPhysicalEvents[actualPhysicalEvents.length - 1] : null;
 
-    // --- Summary Block Logic (no changes) ---
     const fromEvent = allEvents.find(e => e.eventType === 'TRANSPORT' && e.transportCall?.modeOfTransport === 'TRUCK' && e.transportEventTypeCode === 'DEPA');
     const fromLocation = fromEvent?.transportCall?.location?.locationName || 'N/A';
     
@@ -80,10 +78,9 @@ exports.handler = async function(event, context) {
     const toLocation = UN_LOCATION_MAP[destinationUNCode] || toEvent?.transportCall?.location?.locationName || 'N/A';
     
     const lastUpdatedDate = new Date(lastPhysicalEvent.eventCreatedDateTime);
-    const daysAgo = Math.round((new Date() - lastUpdatedDate) / (1000 * 60 * 60 * 24));
+    const daysAgo = Math.round((new Date() - new Date(lastPhysicalEvent.eventCreatedDateTime)) / (1000 * 60 * 60 * 24));
     const lastUpdatedText = daysAgo <= 0 ? 'Today' : `${daysAgo} day${daysAgo === 1 ? '' : 's'} ago`;
 
-    // --- Container Details (no changes) ---
     const containerEvents = actualPhysicalEvents.filter(e => e.equipmentReference);
     const uniqueContainerIds = [...new Set(containerEvents.map(e => e.equipmentReference))];
     const containers = uniqueContainerIds.map(id => {
@@ -110,7 +107,6 @@ exports.handler = async function(event, context) {
         };
     });
     
-    // --- UPDATED: Transport Plan now generates primary/secondary location names ---
     const transportPlan = actualPhysicalEvents.map(event => {
       const eventCode = event.equipmentEventTypeCode || event.transportEventTypeCode;
       let description = eventDescriptions[eventCode] || eventCode;
