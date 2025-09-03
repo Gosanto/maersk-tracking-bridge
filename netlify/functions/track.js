@@ -20,8 +20,6 @@ exports.handler = async function(event, context) {
   const MAERSK_SECRET = process.env.MAERSK_API_CONSUMER_SECRET;
 
   // --- PART 1: AUTHENTICATION ---
-  
-  // UPDATED: Changed the token URL based on the new documentation
   const tokenUrl = 'https://api.maersk.com/customer-identity/oauth/v2/access_token';
   let accessToken;
 
@@ -35,8 +33,7 @@ exports.handler = async function(event, context) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
-        // UPDATED: Added the Consumer-Key header to the token request itself
-        'Consumer-Key': MAERSK_KEY 
+        'Consumer-Key': MAERSK_KEY
       },
       body: formBody.toString()
     });
@@ -46,15 +43,13 @@ exports.handler = async function(event, context) {
       tokenData = await tokenResponse.json();
     } catch (err) {
       const text = await tokenResponse.text();
-      // It's possible for Maersk to return non-JSON on error
       if (!tokenResponse.ok) {
         throw new Error(`Authentication server error (${tokenResponse.status}): ${text}`);
       }
       throw new Error(`Failed to parse OAuth JSON. Raw response: ${text}`);
     }
     
-    // The new endpoint might name the token field 'access_token' or just 'token'
-    accessToken = tokenData.access_token || tokenData.token; 
+    accessToken = tokenData.access_token || tokenData.token;
 
     if (!accessToken) {
       throw new Error(`No access_token in OAuth response: ${JSON.stringify(tokenData)}`);
@@ -70,7 +65,7 @@ exports.handler = async function(event, context) {
     };
   }
 
-  // --- PART 2: FETCH TRACKING DATA (This part remains the same) ---
+  // --- PART 2: FETCH TRACKING DATA ---
   const trackingApiUrl = `https://api.maersk.com/track-and-trace-private/events?transportDocumentReference=${trackingNumber}`;
 
   try {
@@ -95,15 +90,42 @@ exports.handler = async function(event, context) {
 
     const trackingData = await trackingResponse.json();
 
-    // --- PART 3: FORMAT RESPONSE ---
+    // --- PART 3: FORMAT RESPONSE (UPDATED) ---
+    
+    // Helper function to translate Maersk's event codes into plain English.
+    const getEventDescription = (code) => {
+      const descriptions = {
+        'ARVD': 'Arrival',
+        'DEPT': 'Departure',
+        'ENTG': 'Entered Gateway',
+        'EXTG': 'Exited Gateway',
+        'ARCU': 'Arrival at Customer',
+        'DECU': 'Departure from Customer',
+        'GTIN': 'Gate In',
+        'GTOU': 'Gate Out',
+        'LOAD': 'Loaded',
+        'DISC': 'Discharged',
+        'RCVD': 'Received',
+        'DLVD': 'Delivered',
+        'STUF': 'Stuffed',
+        'STRP': 'Stripped',
+        'DRFT': 'Draft Bill of Lading',
+        'OBLI': 'Original Bill of Lading Issued',
+        'RLSE': 'Released',
+        'FNLD': 'Finalized'
+      };
+      return descriptions[code] || code; // Return the full description or the code if not found
+    };
+
     const latest_event = (trackingData.events && trackingData.events[0]) || {};
-    const current_status = latest_event.shipmentEventTypeCode || 'Status Unavailable';
+    const current_status = getEventDescription(latest_event.shipmentEventTypeCode) || 'Status Unavailable';
+
     const formatted_response = {
       status: current_status,
       events: (trackingData.events || []).map(event => ({
         date: event.eventCreatedDateTime || 'N/A',
-        description: event.eventDescription || event.eventType || 'No description',
-        location: (event.eventLocation && event.eventLocation.locationName) || 'Unknown location',
+        description: `${getEventDescription(event.shipmentEventTypeCode)} (${event.eventType})`,
+        location: 'Location data not provided by API',
       }))
     };
 
