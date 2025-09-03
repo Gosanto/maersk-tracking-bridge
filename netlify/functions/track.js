@@ -70,7 +70,7 @@ exports.handler = async function(event, context) {
     const fromLocation = fromLocationObject?.locationName || 'N/A';
     
     // "To" is the location of the last "Vessel Arrival" (ARRI) event.
-    const toEvent = [...allEvents].reverse().find(e => e.transportEventTypeCode === 'ARRI');
+    const toEvent = [...allEvents].reverse().find(e => e.equipmentEventTypeCode === 'DISC');
     const toLocationObject = toEvent?.eventLocation || toEvent?.transportCall?.location;
     const toLocation = toLocationObject?.address?.cityName || toLocationObject?.locationName || 'N/A';
 
