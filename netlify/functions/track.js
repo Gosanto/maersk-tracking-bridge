@@ -7,9 +7,10 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS'
 };
 
-// --- DICTIONARIES (No changes) ---
+// --- DICTIONARIES (Updated to match Maersk's wording) ---
 const eventDescriptions = {
-  'GTIN': 'Gate in', 'GTOT': 'Gate out', 'LOAD': 'Load', 'DISC': 'Discharge', 'STUF': 'Stuffed', 'STRP': 'Stripped', 'PICK': 'Gate out for delivery', 'DROP': 'Empty container return',
+  'GTIN': 'Gate in', 'GTOT': 'Gate out Empty', // Default GTOT
+  'LOAD': 'Load', 'DISC': 'Discharge', 'STUF': 'Stuffed', 'STRP': 'Stripped', 'PICK': 'Gate out for delivery', 'DROP': 'Empty container return',
   'DEPA': 'Vessel departure', 'ARRI': 'Vessel arrival',
 };
 const isoCodeToSize = { '45G1': "40' Dry High", '22G1': "20' Dry", '42G1': "40' Dry", '45R1': "40' Reefer High" };
@@ -46,9 +47,7 @@ exports.handler = async function(event, context) {
   }
 
   try {
-    // --- OPTIMIZATION: Filter for only TRANSPORT and EQUIPMENT events directly in the API call ---
     const trackingApiUrl = `https://api.maersk.com/track-and-trace-private/events?transportDocumentReference=${trackingNumber}&eventType=TRANSPORT,EQUIPMENT`;
-    
     const trackingResponse = await fetch(trackingApiUrl, {
       method: 'GET',
       headers: { 'Authorization': `Bearer ${accessToken}`, 'Consumer-Key': MAERSK_KEY }
@@ -62,29 +61,38 @@ exports.handler = async function(event, context) {
         return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ summary: { blNumber: trackingNumber, from: 'N/A', to: 'N/A' }, transportPlan: [] }) };
     }
     
-    // The redundant JavaScript filter is no longer needed. We now work directly with the API response.
+    // FIX 1: Sort chronologically from oldest to newest.
     const sortedEvents = physicalEvents.sort((a, b) => new Date(a.eventCreatedDateTime) - new Date(b.eventCreatedDateTime));
     const lastEvent = sortedEvents[sortedEvents.length - 1];
     
+    // FIX 2: Refined "From" and "To" logic.
     const getSummaryLocation = (event) => {
         if (!event) return null;
         const loc = event.eventLocation || event.transportCall?.location;
+        // Prioritize city name, but fall back to location name if city isn't available.
         return loc?.address?.cityName || loc?.locationName;
     };
     
-    const firstLoadOrDeparture = sortedEvents.find(e => ['LOAD', 'DEPA'].includes(e.equipmentEventTypeCode || e.transportEventTypeCode));
+    // The 'From' location is the location of the very first physical event.
+    // The 'To' location is the city of the final destination port.
+    const fromLocation = getSummaryLocation(sortedEvents[0]) || 'N/A';
     const lastDischargeOrArrival = [...sortedEvents].reverse().find(e => ['DISC', 'ARRI'].includes(e.equipmentEventTypeCode || e.transportEventTypeCode));
-    const fromLocation = getSummaryLocation(firstLoadOrDeparture || sortedEvents[0]) || 'N/A';
     const toLocation = getSummaryLocation(lastDischargeOrArrival || lastEvent) || 'N/A';
 
     const lastUpdatedDate = new Date(lastEvent.eventCreatedDateTime);
     const daysAgo = Math.round((new Date() - lastUpdatedDate) / (1000 * 60 * 60 * 24));
-    const lastUpdatedText = daysAgo === 0 ? 'Today' : `${daysAgo} day${daysAgo > 1 ? 's' : ''} ago`;
+    const lastUpdatedText = daysAgo <= 0 ? 'Today' : `${daysAgo} day${daysAgo === 1 ? '' : 's'} ago`;
 
-    const transportPlan = sortedEvents.map(event => {
+    // FIX 3: More descriptive event names.
+    const transportPlan = sortedEvents.map((event, index) => {
       const eventCode = event.equipmentEventTypeCode || event.transportEventTypeCode;
       let description = eventDescriptions[eventCode] || eventCode || event.eventType;
       
+      // Maersk uses "Gate out for delivery" for the last "Gate out" event.
+      if(eventCode === 'GTOT' && index === sortedEvents.length - 2) { // Check if it's the second to last event
+          description = 'Gate out for delivery';
+      }
+
       let vesselInfo = null;
       if(event.eventType === 'TRANSPORT' && event.transportCall?.vessel?.vesselName) {
         vesselInfo = `${event.transportCall.vessel.vesselName} / ${event.transportCall.exportVoyageNumber}`;
@@ -94,7 +102,7 @@ exports.handler = async function(event, context) {
       
       return {
         locationName: locationObj?.locationName,
-        locationDetail: locationObj?.address ? `${locationObj.address.cityName}, ${locationObj.address.country}` : null,
+        locationDetail: locationObj?.address?.cityName && locationObj.address.cityName.toLowerCase() !== locationObj.locationName.toLowerCase() ? `${locationObj.address.cityName}, ${locationObj.address.country}` : null,
         icon: getIcon(event),
         description: description,
         vesselInfo: vesselInfo,
@@ -122,7 +130,7 @@ exports.handler = async function(event, context) {
       summary: { blNumber: trackingNumber, from: fromLocation, to: toLocation },
       lastUpdated: lastUpdatedText,
       containers: containers,
-      transportPlan: transportPlan.reverse()
+      transportPlan: transportPlan // No longer reversed
     };
 
     return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(finalResponse) };
