@@ -20,9 +20,9 @@ const getIcon = (event) => {
 };
 
 const UN_LOCATION_MAP = {
-    'SAJED': 'Jeddah, Saudi Arabia',
-    'EGPSD': 'Port Said, Egypt',
-    'TRKMX': 'Ambarli, Turkey'
+    'SAJED': 'Jeddah',
+    'EGPSD': 'Port Said',
+    'TRKMX': 'Ambarli'
 };
 
 exports.handler = async function(event, context) {
@@ -66,10 +66,11 @@ exports.handler = async function(event, context) {
         return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ summary: { blNumber: trackingNumber } }) };
     }
     
-    const physicalEvents = allEvents.filter(e => e.eventType !== 'SHIPMENT');
-    const lastPhysicalEvent = physicalEvents.length > 0 ? physicalEvents[physicalEvents.length - 1] : null;
+    // UPDATED: Filter for ACTUAL physical events for the transport plan
+    const actualPhysicalEvents = allEvents.filter(e => e.eventType !== 'SHIPMENT' && e.eventClassifierCode === 'ACT');
+    const lastPhysicalEvent = actualPhysicalEvents.length > 0 ? actualPhysicalEvents[actualPhysicalEvents.length - 1] : null;
 
-    // --- "FROM" and "TO" LOGIC ---
+    // --- Summary Block Logic (no changes) ---
     const fromEvent = allEvents.find(e => e.eventType === 'TRANSPORT' && e.transportCall?.modeOfTransport === 'TRUCK' && e.transportEventTypeCode === 'DEPA');
     const fromLocation = fromEvent?.transportCall?.location?.locationName || 'N/A';
     
@@ -81,33 +82,22 @@ exports.handler = async function(event, context) {
     const daysAgo = Math.round((new Date() - lastUpdatedDate) / (1000 * 60 * 60 * 24));
     const lastUpdatedText = daysAgo <= 0 ? 'Today' : `${daysAgo} day${daysAgo === 1 ? '' : 's'} ago`;
 
-    // --- Container Details ---
-    const containerEvents = physicalEvents.filter(e => e.equipmentReference);
+    // --- Container Details (no changes) ---
+    const containerEvents = actualPhysicalEvents.filter(e => e.equipmentReference);
     const uniqueContainerIds = [...new Set(containerEvents.map(e => e.equipmentReference))];
     const containers = uniqueContainerIds.map(id => {
-        const eventsForThisContainer = allEvents.filter(e => e.equipmentReference === id);
-        const physicalForContainer = eventsForThisContainer.filter(e => e.eventType !== 'SHIPMENT');
+        const physicalForContainer = actualPhysicalEvents.filter(e => e.equipmentReference === id);
         const lastActualEventForContainer = physicalForContainer[physicalForContainer.length - 1];
-        
-        // --- FINAL ETA LOGIC ---
-        // First, look for a specific "Estimated Arrival" event.
-        const etaEvent = [...eventsForThisContainer].reverse().find(e => e.transportEventTypeCode === 'ARRI' && e.eventClassifierCode === 'EST');
-        // If not found, fall back to the date of the last known actual event.
+        const etaEvent = [...allEvents].reverse().find(e => e.transportEventTypeCode === 'ARRI' && e.eventClassifierCode === 'EST');
         const etaDate = etaEvent?.eventDateTime || lastActualEventForContainer?.eventDateTime || null;
-
-        // --- FINAL LATEST EVENT LOGIC ---
         const lastLoc = lastActualEventForContainer?.eventLocation || lastActualEventForContainer?.transportCall?.location;
         const eventCode = lastActualEventForContainer?.equipmentEventTypeCode || lastActualEventForContainer?.transportEventTypeCode;
-        
         let latestEventDescription = eventDescriptions[eventCode] || eventCode;
-        // Special rule: If the last event is a "Gate In" of an "Empty" container, describe it as "Empty container return".
         if (lastActualEventForContainer?.eventType === 'EQUIPMENT' && eventCode === 'GTIN' && lastActualEventForContainer?.emptyIndicatorCode === 'EMPTY') {
             latestEventDescription = 'Empty container return';
         }
-
         const latestEventLocationUNCode = lastLoc?.UNLocationCode;
         const latestEventLocation = UN_LOCATION_MAP[latestEventLocationUNCode] || lastLoc?.locationName || 'N/A';
-        
         return {
             id, size: isoCodeToSize[lastActualEventForContainer?.ISOEquipmentCode] || 'Standard',
             eta: { date: etaDate, label: "Estimated arrival date" },
@@ -118,18 +108,29 @@ exports.handler = async function(event, context) {
             }
         };
     });
-
-    const transportPlan = physicalEvents.map(event => {
+    
+    // --- Transport Plan (with smarter descriptions) ---
+    const transportPlan = actualPhysicalEvents.map(event => {
       const eventCode = event.equipmentEventTypeCode || event.transportEventTypeCode;
       let description = eventDescriptions[eventCode] || eventCode;
+      
+      // Add more descriptive context for gate out events
+      if (eventCode === 'GTOT' && event.emptyIndicatorCode === 'LADEN') {
+        description = 'Gate out for delivery';
+      }
+
       let vesselInfo = null;
       if (event.eventType === 'TRANSPORT' && event.transportCall?.vessel?.vesselName) {
         vesselInfo = `${event.transportCall.vessel.vesselName} / ${event.transportCall.exportVoyageNumber}`;
       }
       const locationObj = event.eventLocation || event.transportCall?.location;
+      
+      const primaryLocation = locationObj?.address?.cityName || locationObj?.locationName;
+      const secondaryLocation = locationObj?.address?.cityName ? locationObj.locationName : null;
+
       return {
-        locationName: locationObj?.locationName,
-        locationDetail: locationObj?.address?.cityName && locationObj.address.cityName.toLowerCase() !== locationObj.locationName.toLowerCase() ? `${locationObj.address.cityName}, ${locationObj.address.country}` : null,
+        primaryLocation: primaryLocation,
+        secondaryLocation: secondaryLocation,
         icon: getIcon(event), description, vesselInfo, date: event.eventDateTime
       };
     });
