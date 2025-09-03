@@ -62,29 +62,30 @@ exports.handler = async function(event, context) {
     
     const physicalEvents = allEvents.filter(e => e.eventType !== 'SHIPMENT');
     
-    // --- FINAL, SIMPLIFIED "FROM" and "TO" LOGIC ---
+    // --- FINAL "FROM" AND "TO" LOGIC ---
     
-    // For "From": Use the location name of the very first event in the entire timeline.
-    const firstEvent = allEvents[0];
-    const fromLocationObject = firstEvent?.eventLocation || firstEvent?.transportCall?.location;
+    // For "From": Find the first event in the entire timeline that has a location.
+    const firstLocatedEvent = allEvents.find(e => e.eventLocation || e.transportCall?.location);
+    const fromLocationObject = firstLocatedEvent?.eventLocation || firstLocatedEvent?.transportCall?.location;
     const fromLocation = fromLocationObject?.locationName || 'N/A';
     
-    // For "To": Use the city name of the very last physical event.
+    // For "To": Find the location of the very last physical event.
     const lastPhysicalEvent = physicalEvents.length > 0 ? physicalEvents[physicalEvents.length - 1] : null;
     const destinationLocationObject = lastPhysicalEvent?.eventLocation || lastPhysicalEvent?.transportCall?.location;
+    // We prioritize the city name, but fall back to the terminal name if the city is not provided by the API.
     const toLocation = destinationLocationObject?.address?.cityName || destinationLocationObject?.locationName || 'N/A';
 
     const lastUpdatedDate = new Date(lastPhysicalEvent.eventCreatedDateTime);
     const daysAgo = Math.round((new Date() - lastUpdatedDate) / (1000 * 60 * 60 * 24));
     const lastUpdatedText = daysAgo <= 0 ? 'Today' : `${daysAgo} day${daysAgo === 1 ? '' : 's'} ago`;
 
-    // --- Build Container Details (with corrected "Latest event" logic) ---
+    // --- Container Details ---
     const containerEvents = physicalEvents.filter(e => e.equipmentReference);
     const uniqueContainerIds = [...new Set(containerEvents.map(e => e.equipmentReference))];
     const containers = uniqueContainerIds.map(id => {
         const eventsForThisContainer = allEvents.filter(e => e.equipmentReference === id);
-        const physicalEventsForContainer = eventsForThisContainer.filter(e => e.eventType !== 'SHIPMENT');
-        const lastActualEventForContainer = physicalEventsForContainer[physicalEventsForContainer.length - 1];
+        const physicalForContainer = eventsForThisContainer.filter(e => e.eventType !== 'SHIPMENT');
+        const lastActualEventForContainer = physicalForContainer[physicalForContainer.length - 1];
         
         const etaEvent = [...eventsForThisContainer].reverse().find(e => e.transportEventTypeCode === 'ARRI' && e.eventClassifierCode === 'EST');
         
