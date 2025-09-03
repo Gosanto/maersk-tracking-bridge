@@ -7,10 +7,8 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS'
 };
 
-// --- Dictionaries & Helpers (Updated for accuracy) ---
 const eventDescriptions = {
-  'GTIN': 'Gate in', 'GTOT': 'Gate out Empty',
-  'LOAD': 'Load', 'DISC': 'Discharge',
+  'GTIN': 'Gate in', 'GTOT': 'Gate out Empty', 'LOAD': 'Load', 'DISC': 'Discharge',
   'PICK': 'Gate out for delivery', 'DROP': 'Empty container return',
   'DEPA': 'Vessel departure', 'ARRI': 'Vessel arrival',
 };
@@ -55,47 +53,40 @@ exports.handler = async function(event, context) {
     });
     if (!trackingResponse.ok) throw new Error(`Maersk API Error (${trackingResponse.status})`);
     
+    // The entire JSON response from Maersk, not just the events
     const trackingData = await trackingResponse.json();
+    
+    // --- CORRECT "FROM" and "TO" LOGIC ---
+    // Access the shipper and consignee directly from the main response object.
+    // Optional chaining (?.) is used for safety in case these fields don't exist.
+    const fromLocation = trackingData.shipper?.address?.cityName || 'N/A';
+    const toLocation = trackingData.consignee?.address?.cityName || 'N/A';
+    
     const physicalEvents = (trackingData.events || []);
     
     if (physicalEvents.length === 0) {
-        return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ summary: { blNumber: trackingNumber, from: 'N/A', to: 'N/A' }, transportPlan: [] }) };
+        return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ summary: { blNumber: trackingNumber, from: fromLocation, to: toLocation }, transportPlan: [] }) };
     }
     
     const sortedEvents = physicalEvents.sort((a, b) => new Date(a.eventCreatedDateTime) - new Date(b.eventCreatedDateTime));
     const lastEvent = sortedEvents[sortedEvents.length - 1];
     
-    // --- FINAL "FROM" AND "TO" LOGIC ---
-    // Find the first event in the timeline that has a city name to determine the origin.
-    const originEvent = sortedEvents.find(e => (e.eventLocation || e.transportCall?.location)?.address?.cityName);
-    const fromLocation = originEvent ? (originEvent.eventLocation || originEvent.transportCall.location).address.cityName : 'N/A';
-
-    // Find the last event in the timeline that has a city name to determine the destination.
-    const destinationEvent = [...sortedEvents].reverse().find(e => (e.eventLocation || e.transportCall?.location)?.address?.cityName);
-    const toLocation = destinationEvent ? (destinationEvent.eventLocation || destinationEvent.transportCall.location).address.cityName : 'N/A';
-
     const lastUpdatedDate = new Date(lastEvent.eventCreatedDateTime);
     const daysAgo = Math.round((new Date() - lastUpdatedDate) / (1000 * 60 * 60 * 24));
     const lastUpdatedText = daysAgo <= 0 ? 'Today' : `${daysAgo} day${daysAgo === 1 ? '' : 's'} ago`;
 
     const transportPlan = sortedEvents.map(event => {
       const eventCode = event.equipmentEventTypeCode || event.transportEventTypeCode;
-      let description = eventDescriptions[eventCode] || eventCode || event.eventType;
-      
+      let description = eventDescriptions[eventCode] || eventCode;
       let vesselInfo = null;
-      if(event.eventType === 'TRANSPORT' && event.transportCall?.vessel?.vesselName) {
+      if (event.eventType === 'TRANSPORT' && event.transportCall?.vessel?.vesselName) {
         vesselInfo = `${event.transportCall.vessel.vesselName} / ${event.transportCall.exportVoyageNumber}`;
       }
-
       const locationObj = event.eventLocation || event.transportCall?.location;
-      
       return {
         locationName: locationObj?.locationName,
         locationDetail: locationObj?.address?.cityName && locationObj.address.cityName.toLowerCase() !== locationObj.locationName.toLowerCase() ? `${locationObj.address.cityName}, ${locationObj.address.country}` : null,
-        icon: getIcon(event),
-        description: description,
-        vesselInfo: vesselInfo,
-        date: event.eventDateTime
+        icon: getIcon(event), description, vesselInfo, date: event.eventDateTime
       };
     });
     
@@ -105,14 +96,9 @@ exports.handler = async function(event, context) {
         const lastEventForContainer = [...containerEvents].reverse().find(e => e.equipmentReference === id);
         const eventCode = lastEventForContainer.equipmentEventTypeCode;
         const lastLoc = lastEventForContainer.eventLocation || lastEventForContainer.transportCall?.location;
-        
-        // --- FINAL "Latest event" LOGIC ---
-        // Use the description of the absolute last event for this container.
         const finalStatusDesc = eventDescriptions[eventCode] || eventCode;
-        
         return {
-            id: id,
-            size: isoCodeToSize[lastEventForContainer.ISOEquipmentCode] || 'Standard',
+            id, size: isoCodeToSize[lastEventForContainer.ISOEquipmentCode] || 'Standard',
             finalStatus: finalStatusDesc,
             finalLocation: lastLoc?.address ? `${lastLoc.address.cityName}, ${lastLoc.address.country}` : 'N/A',
             finalDate: lastEventForContainer.eventDateTime
@@ -121,9 +107,7 @@ exports.handler = async function(event, context) {
 
     const finalResponse = {
       summary: { blNumber: trackingNumber, from: fromLocation, to: toLocation },
-      lastUpdated: lastUpdatedText,
-      containers: containers,
-      transportPlan: transportPlan
+      lastUpdated: lastUpdatedText, containers, transportPlan
     };
 
     return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(finalResponse) };
