@@ -14,15 +14,14 @@ const eventDescriptions = {
 };
 const isoCodeToSize = { '45G1': "40' Dry High", '22G1': "20' Dry", '42G1': "40' Dry" };
 const getIcon = (event) => {
-  if (event.eventType === 'TRANSPORT') return 'vessel';
+  if (event.eventType === 'TRANSPORT' || event.transportCall?.modeOfTransport === 'VESSEL') return 'vessel';
   if (['GTOT', 'GTIN', 'PICK'].includes(event.equipmentEventTypeCode) || event.transportCall?.modeOfTransport === 'TRUCK') return 'truck';
   return 'container';
 };
 
 const UN_LOCATION_MAP = {
-    'SAJED': 'Jeddah',
-    'EGPSD': 'Port Said',
-    'TRKMX': 'Ambarli'
+    'SAJED': 'JEDDAH', 'EGPSD': 'PORT SAID EAST', 'TRKMX': 'AMBARLI PORT ISTANBUL',
+    // Add other UN Location Codes and their primary display names here
 };
 
 exports.handler = async function(event, context) {
@@ -109,12 +108,11 @@ exports.handler = async function(event, context) {
         };
     });
     
-    // --- Transport Plan (with smarter descriptions) ---
+    // --- Transport Plan (with smarter descriptions and location structure) ---
     const transportPlan = actualPhysicalEvents.map(event => {
       const eventCode = event.equipmentEventTypeCode || event.transportEventTypeCode;
       let description = eventDescriptions[eventCode] || eventCode;
       
-      // Add more descriptive context for gate out events
       if (eventCode === 'GTOT' && event.emptyIndicatorCode === 'LADEN') {
         description = 'Gate out for delivery';
       }
@@ -125,12 +123,11 @@ exports.handler = async function(event, context) {
       }
       const locationObj = event.eventLocation || event.transportCall?.location;
       
-      const primaryLocation = locationObj?.address?.cityName || locationObj?.locationName;
-      const secondaryLocation = locationObj?.address?.cityName ? locationObj.locationName : null;
+      const primaryLocation = UN_LOCATION_MAP[locationObj?.UNLocationCode] || locationObj?.address?.cityName || locationObj?.locationName;
+      const secondaryLocation = (locationObj?.address?.cityName || locationObj?.locationName) !== primaryLocation ? locationObj?.locationName : null;
 
       return {
-        primaryLocation: primaryLocation,
-        secondaryLocation: secondaryLocation,
+        primaryLocation, secondaryLocation,
         icon: getIcon(event), description, vesselInfo, date: event.eventDateTime
       };
     });
