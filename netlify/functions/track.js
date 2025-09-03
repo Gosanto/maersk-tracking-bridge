@@ -62,40 +62,18 @@ exports.handler = async function(event, context) {
     
     const physicalEvents = allEvents.filter(e => e.eventType !== 'SHIPMENT');
     
-    // --- FINAL "FROM" AND "TO" LOGIC ---
+    // --- "FROM" AND "TO" LOGIC ---
     
     // "From" is the location of the very first "Vessel Departure" (DEPA) event.
     const fromEvent = allEvents.find(e => e.transportEventTypeCode === 'DEPA');
     const fromLocationObject = fromEvent?.eventLocation || fromEvent?.transportCall?.location;
     const fromLocation = fromLocationObject?.locationName || 'N/A';
     
-    // For "To": A more robust, two-step logic
-    let toLocation = 'N/A';
-    // 1. Find the last vessel arrival event to identify the destination port code.
-    const lastArrivalEvent = [...allEvents].reverse().find(e => e.transportEventTypeCode === 'ARRI');
-    const destinationUNLocationCode = lastArrivalEvent?.transportCall?.UNLocationCode;
-
-    if (destinationUNLocationCode) {
-        // 2. Find any event at that same location code that has a city name.
-        const eventAtDestinationWithCity = allEvents.find(e => 
-            (e.transportCall?.UNLocationCode === destinationUNLocationCode || e.eventLocation?.UNLocationCode === destinationUNLocationCode) &&
-            (e.transportCall?.location?.address?.cityName || e.eventLocation?.address?.cityName)
-        );
-
-        if (eventAtDestinationWithCity) {
-            const loc = eventAtDestinationWithCity.transportCall?.location || eventAtDestinationWithCity.eventLocation;
-            toLocation = loc.address.cityName;
-        } else {
-            // Fallback: If no city name is found, use the location name from the last arrival event.
-            toLocation = lastArrivalEvent?.transportCall?.location?.locationName || 'N/A';
-        }
-    } else {
-        // Ultimate fallback: If we can't even find an arrival event, use the last physical event's location.
-        const lastPhysicalEvent = physicalEvents.length > 0 ? physicalEvents[physicalEvents.length - 1] : null;
-        const destObj = lastPhysicalEvent?.eventLocation || lastPhysicalEvent?.transportCall?.location;
-        toLocation = destObj?.address?.cityName || destObj?.locationName || 'N/A';
-    }
-
+    // UPDATED "To" LOGIC: Find the location of the last "Vessel Arrival" (ARRI) event.
+    const toEvent = [...allEvents].reverse().find(e => e.transportEventTypeCode === 'ARRI');
+    const toLocationObject = toEvent?.eventLocation || toEvent?.transportCall?.location;
+    // We prioritize the city name, but fall back to the location/terminal name if the city is not provided.
+    const toLocation = toLocationObject?.address?.cityName || toLocationObject?.locationName || 'N/A';
 
     const lastPhysicalEvent = physicalEvents.length > 0 ? physicalEvents[physicalEvents.length - 1] : null;
     const lastUpdatedDate = new Date(lastPhysicalEvent.eventCreatedDateTime);
